@@ -4,7 +4,9 @@
 //! `filmcraft_render::render_sequence`'s premultiplied linear-light RGBA and the export pipeline's
 //! placement, overlays and video limiter see exactly what the CPU renderer would have produced.
 //!
-//! The renderer owns its own wgpu instance/adapter/device (no window). With no adapter (headless
+//! Renderers share one off-screen wgpu device (no window), created by the first and kept for the
+//! process, so an export can run several (one per export worker; each has its own compositor and
+//! textures) without opening a device each. With no adapter (headless
 //! machine, unsupported GPU) [`ExportRenderer::new`] returns `None` and the export falls back to
 //! the CPU renderer; a `FramePlan::Image` plan (HDR / wide gamut / anything the plan sends to the
 //! CPU) is returned unchanged — it already is the CPU image.
@@ -14,6 +16,61 @@ use filmcraft_project::{ItemId, Project};
 use filmcraft_render::plan::{FramePlan, plan_frame};
 use filmcraft_render::{Image, RenderOptions, SourceProvider};
 use filmcraft_time::Tick;
+
+/// Where export rendering spends its time (process-wide totals, for the bench).
+pub mod timing {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Duration;
+
+    static SUBMIT_NS: AtomicU64 = AtomicU64::new(0);
+    static MAP_WAIT_NS: AtomicU64 = AtomicU64::new(0);
+    static CONVERT_NS: AtomicU64 = AtomicU64::new(0);
+    static FRAMES: AtomicU64 = AtomicU64::new(0);
+
+    /// Totals since the last [`reset`].
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct GpuTimings {
+        /// Recording and submitting the frame's commands.
+        pub submit: Duration,
+        /// Waiting for the GPU and the staging buffer's mapping.
+        pub map_wait: Duration,
+        /// Half float → f32 conversion of the read-back pixels.
+        pub convert: Duration,
+        /// Frames composited by the GPU.
+        pub frames: u64,
+    }
+
+    fn add(counter: &AtomicU64, d: Duration) {
+        counter.fetch_add(u64::try_from(d.as_nanos()).unwrap_or(u64::MAX), Ordering::Relaxed);
+    }
+
+    pub(crate) fn add_submit(d: Duration) {
+        add(&SUBMIT_NS, d);
+    }
+
+    pub(crate) fn add_map_wait(d: Duration) {
+        add(&MAP_WAIT_NS, d);
+    }
+
+    pub(crate) fn add_convert(d: Duration) {
+        add(&CONVERT_NS, d);
+    }
+
+    pub(crate) fn add_frame() {
+        FRAMES.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn get() -> GpuTimings {
+        let d = |c: &AtomicU64| Duration::from_nanos(c.load(Ordering::Relaxed));
+        GpuTimings { submit: d(&SUBMIT_NS), map_wait: d(&MAP_WAIT_NS), convert: d(&CONVERT_NS), frames: FRAMES.load(Ordering::Relaxed) }
+    }
+
+    pub fn reset() {
+        for c in [&SUBMIT_NS, &MAP_WAIT_NS, &CONVERT_NS, &FRAMES] {
+            c.store(0, Ordering::Relaxed);
+        }
+    }
+}
 
 pub struct ExportRenderer {
     _instance: wgpu::Instance,
@@ -27,9 +84,17 @@ pub struct ExportRenderer {
 impl ExportRenderer {
     /// The off-screen device, or `None` when this host has no usable adapter.
     pub fn new() -> Option<Self> {
-        let instance = wgpu::Instance::default();
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()?;
+        // `None` is kept too: a machine without an adapter does not search again on every export
+        static SHARED: std::sync::OnceLock<Option<(wgpu::Instance, wgpu::Device, wgpu::Queue)>> = std::sync::OnceLock::new();
+        let (instance, device, queue) = SHARED
+            .get_or_init(|| {
+                let instance = wgpu::Instance::default();
+                let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
+                let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()?;
+                Some((instance, device, queue))
+            })
+            .as_ref()?
+            .clone();
         let compositor = GpuCompositor::new(&device, &queue);
         Some(Self { _instance: instance, device, queue, compositor })
     }
@@ -43,8 +108,8 @@ impl ExportRenderer {
             FramePlan::Image(img) => Some(img.clone()),
             FramePlan::Layers { .. } => {
                 let prep = prepare(&plan);
-                self.compositor.composite_prepared(&plan, Some(&prep));
-                let (w, h, px) = self.compositor.read_accumulator()?;
+                let (w, h, px) = self.compositor.render_export_prepared(&plan, Some(&prep))?;
+                timing::add_frame();
                 Some(Image { w: w as usize, h: h as usize, px })
             }
         }

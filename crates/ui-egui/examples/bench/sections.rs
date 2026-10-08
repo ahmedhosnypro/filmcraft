@@ -484,6 +484,8 @@ pub fn export(o: &Opts) -> Vec<Value> {
             .expect("audio");
             frames = s.project.sequence(seq).map(|q| q.settings.frame_rate.frame_at(q.duration())).unwrap_or(0);
             let out = dir.join(format!("out.{ext}"));
+            filmcraft_export::reset_export_lock_wait();
+            filmcraft_gpu::export_renderer::timing::reset();
             let (t0, c0) = (Instant::now(), cpu_now());
             // `--hw auto`: the hardware encoder too (NVENC H.264 on Windows); `--hw off`: ours
             let hardware = if o.hw == "off" { "off" } else { "auto" };
@@ -496,6 +498,22 @@ pub fn export(o: &Opts) -> Vec<Value> {
             if let Some(e) = s.jobs.last().and_then(|j| j.progress.error.lock().ok().and_then(|g| g.clone())) {
                 eprintln!("export {format}: {e}");
                 break;
+            }
+            let lock_wait = filmcraft_export::export_lock_wait();
+            let gpu_timings = filmcraft_gpu::export_renderer::timing::get();
+            if gpu_timings.frames > 0 {
+                let f = gpu_timings.frames as f64;
+                eprintln!(
+                    "  [GPU timings for {format}] lock_wait: {:.1} ms ({:.2} ms/f), submit: {:.1} ms ({:.2} ms/f), map_wait: {:.1} ms ({:.2} ms/f), convert: {:.1} ms ({:.2} ms/f)",
+                    lock_wait.as_secs_f64() * 1000.0,
+                    lock_wait.as_secs_f64() * 1000.0 / f,
+                    gpu_timings.submit.as_secs_f64() * 1000.0,
+                    gpu_timings.submit.as_secs_f64() * 1000.0 / f,
+                    gpu_timings.map_wait.as_secs_f64() * 1000.0,
+                    gpu_timings.map_wait.as_secs_f64() * 1000.0 / f,
+                    gpu_timings.convert.as_secs_f64() * 1000.0,
+                    gpu_timings.convert.as_secs_f64() * 1000.0 / f,
+                );
             }
             runs.push(dt);
             cpu.push(ms(cpu_now() - c0) / frames.max(1) as f64);

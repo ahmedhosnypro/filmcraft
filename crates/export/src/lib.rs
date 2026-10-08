@@ -732,6 +732,7 @@ pub(crate) fn build_frame_renderer() -> Option<Box<dyn FrameRenderer>> {
 
 static GPU_FRAMES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static GPU_FALLBACKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static LOCK_WAIT_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// A frame was composited by the registered GPU renderer.
 pub fn note_gpu_frame() {
@@ -741,6 +742,21 @@ pub fn note_gpu_frame() {
 /// The GPU renderer declined a frame (the CPU reference renderer took it).
 pub fn note_gpu_fallback() {
     GPU_FALLBACKS.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Time an export worker waited for a free GPU renderer (process-wide, for the bench).
+pub(crate) fn note_lock_wait(d: std::time::Duration) {
+    LOCK_WAIT_NS.fetch_add(u64::try_from(d.as_nanos()).unwrap_or(u64::MAX), Ordering::Relaxed);
+}
+
+/// Total time export workers waited for a GPU renderer since [`reset_export_lock_wait`].
+pub fn export_lock_wait() -> std::time::Duration {
+    std::time::Duration::from_nanos(LOCK_WAIT_NS.load(Ordering::Relaxed))
+}
+
+/// Start [`export_lock_wait`] again from zero.
+pub fn reset_export_lock_wait() {
+    LOCK_WAIT_NS.store(0, Ordering::Relaxed);
 }
 
 /// GPU-vs-CPU frame counters of the export renderer (per-process, like the hardware ones).
