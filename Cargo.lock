@@ -2215,7 +2215,7 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-tts"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "candle-core",
  "candle-nn",
@@ -2229,7 +2229,7 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-tts-text"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
