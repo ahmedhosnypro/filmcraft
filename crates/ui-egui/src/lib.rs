@@ -1267,6 +1267,9 @@ impl FilmcraftApp {
         self.advance_playback(&ctx);
         // Text to Speech: a selected narration clip loads into the panel
         panels::tts::follow_selection(self);
+        if self.ui.tts.pending.is_some() || self.ui.tts.download_job.is_some() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
         let t = self.tokens;
         let full = ui.max_rect();
         ui.painter().rect_filled(full, 0.0, t.app_bg);

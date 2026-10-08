@@ -3,8 +3,14 @@
 //! script and settings here (and brings the panel forward), and Save regenerates it in place.
 //! Every action is a `tts.*` command, so the panel, MCP and the control channel share one path.
 //!
+//! Synthesis runs as a background job (`tts.render`); when it finishes, the panel runs the action
+//! (preview, create or edit), which then uses the cached audio, so the window never stalls. The
+//! natural voices need a one-time download that the user confirms in the panel (size, source,
+//! licence); it runs as a job with progress and Cancel.
+//!
 //! Automation ids: `tts.language`, `tts.voice`, `tts.hearVoice`, `tts.advanced` (twirl),
-//! `tts.pitch`, `tts.pace`, `tts.text`, `tts.addPause`, `tts.preview`, `tts.save`, `tts.new`.
+//! `tts.pitch`, `tts.pace`, `tts.text`, `tts.addPause`, `tts.preview`, `tts.save`, `tts.new`,
+//! `tts.download`, `tts.download.confirm`, `tts.download.cancel`.
 
 use egui::{Align2, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 use filmcraft_project::{ClipId, VocalPitch};
@@ -30,6 +36,23 @@ pub struct TtsDraft {
     pub advanced_open: bool,
     /// The narration clip and item the draft was loaded from (None: a new narration).
     pub loaded_from: Option<(u64, u64)>,
+    /// An action waiting for its synthesis job.
+    pub pending: Option<Pending>,
+    /// The download confirmation is showing.
+    pub confirm_download: bool,
+    /// The running natural-voice download job.
+    pub download_job: Option<u64>,
+}
+
+/// A command to run when the synthesis job `job` finishes.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Pending {
+    pub cmd: String,
+    pub params: serde_json::Value,
+    /// Play the preview afterwards.
+    pub play: bool,
+    pub job: u64,
 }
 
 impl Default for TtsDraft {
@@ -37,11 +60,14 @@ impl Default for TtsDraft {
         TtsDraft {
             text: String::new(),
             language: "en-US".into(),
-            voice: filmcraft_tts::default_voice_id().into(),
+            voice: if natural_installed() { "kokoro-heart".into() } else { filmcraft_tts::default_voice_id().into() },
             pitch: VocalPitch::Default,
             pace: 1.0,
             advanced_open: true,
             loaded_from: None,
+            pending: None,
+            confirm_download: false,
+            download_job: None,
         }
     }
 }
@@ -49,6 +75,88 @@ impl Default for TtsDraft {
 impl TtsDraft {
     fn params(&self) -> serde_json::Value {
         json!({"text": self.text, "voice": self.voice, "pitch": self.pitch.id(), "pace": self.pace})
+    }
+}
+
+/// The natural voice package is downloaded.
+fn natural_installed() -> bool {
+    filmcraft_engine::transcript::models_dir().as_deref().is_some_and(filmcraft_tts::catalog::installed)
+}
+
+/// State of job `id`: `None` while running, else its result.
+fn job_outcome(app: &FilmcraftApp, id: u64) -> Option<Result<(), String>> {
+    use std::sync::atomic::Ordering;
+    let Some(j) = app.session.jobs.iter().find(|j| j.id == id) else { return Some(Err("the job disappeared".into())) };
+    if !j.progress.finished.load(Ordering::Relaxed) {
+        return None;
+    }
+    Some(match &*j.result.lock().unwrap_or_else(std::sync::PoisonError::into_inner) {
+        Some(Ok(_)) => Ok(()),
+        Some(Err(e)) => Err(e.clone()),
+        None => Err("the job stopped".into()),
+    })
+}
+
+/// Start an action: synthesize in the background (or reuse the cache), then run `cmd`.
+fn start(app: &mut FilmcraftApp, cmd: &str, params: serde_json::Value, play: bool) {
+    let mut render = params.clone();
+    if let Some(o) = render.as_object_mut() {
+        o.remove("dir");
+        o.remove("time");
+    }
+    match app.session.execute("tts.render", render) {
+        Ok(r) => match r["job"].as_u64() {
+            Some(job) => {
+                app.ui.tts.pending = Some(Pending { cmd: cmd.to_string(), params, play, job });
+                app.ui.status = "Synthesizing narration…".into();
+            }
+            None => run_now(app, cmd, params, play),
+        },
+        Err(e) => app.ui.status = e.to_string(),
+    }
+}
+
+fn run_now(app: &mut FilmcraftApp, cmd: &str, params: serde_json::Value, play: bool) {
+    match app.session.execute(cmd, params) {
+        Ok(r) => {
+            if play {
+                if let Err(e) = app.play_tts_preview() {
+                    app.ui.status = e;
+                }
+            } else {
+                app.ui.status = match cmd {
+                    "tts.create" => format!("Narration added on {}", r["track"].as_str().unwrap_or("an audio track")),
+                    _ => "Narration updated".into(),
+                };
+            }
+        }
+        Err(e) => app.ui.status = e.to_string(),
+    }
+}
+
+/// Finish a pending action whose synthesis job is done.
+fn poll(app: &mut FilmcraftApp) {
+    if let Some(p) = app.ui.tts.pending.clone() {
+        match job_outcome(app, p.job) {
+            None => {}
+            Some(Ok(())) => {
+                app.ui.tts.pending = None;
+                run_now(app, &p.cmd, p.params, p.play);
+            }
+            Some(Err(e)) => {
+                app.ui.tts.pending = None;
+                app.ui.status = format!("Text to Speech: {e}");
+            }
+        }
+    }
+    if let Some(j) = app.ui.tts.download_job
+        && let Some(r) = job_outcome(app, j)
+    {
+        app.ui.tts.download_job = None;
+        app.ui.status = match r {
+            Ok(()) => "Natural voices installed".into(),
+            Err(e) => format!("Download of the natural voices failed: {e}"),
+        };
     }
 }
 
@@ -62,6 +170,7 @@ fn selected_narration(app: &FilmcraftApp) -> Option<(ClipId, u64)> {
 /// Load the selected narration clip into the draft when the selection moves to a different one,
 /// and bring the panel forward. Runs every frame, also when the panel is hidden.
 pub fn follow_selection(app: &mut FilmcraftApp) {
+    poll(app);
     let sel = selected_narration(app);
     match sel {
         Some((clip, item)) if app.ui.tts.loaded_from != Some((clip.0, item)) => {
@@ -90,13 +199,24 @@ pub fn follow_selection(app: &mut FilmcraftApp) {
 enum Action {
     Run(&'static str, serde_json::Value, bool),
     New,
+    Download,
+    CancelDownload,
 }
 
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let painter = ui.painter().clone();
     painter.rect_filled(rect, 0.0, t.panel_bg);
-    let voices = filmcraft_tts::voices();
+    let models = filmcraft_engine::transcript::models_dir();
+    let voices = filmcraft_tts::voices_in(models.as_deref());
+    let installed = models.as_deref().is_some_and(filmcraft_tts::catalog::installed);
+    let busy = app.ui.tts.pending.is_some();
+    let download = app
+        .ui
+        .tts
+        .download_job
+        .and_then(|id| app.session.jobs.iter().find(|j| j.id == id))
+        .map(|j| (j.progress.fraction(), j.progress.status.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()));
     let editing = app.ui.tts.loaded_from.map(|(c, _)| c);
     let mut actions: Vec<Action> = Vec::new();
     let auto = &mut app.auto;
@@ -136,21 +256,76 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         label(ui, &t, "Voice");
         let voice_name = voices.iter().find(|v| v.id == d.voice).map_or(d.voice.as_str(), |v| v.name);
         let cb = egui::ComboBox::from_id_salt("tts-voice").selected_text(voice_name).width(w).show_ui(ui, |ui| {
-            for v in voices.iter().filter(|v| v.language == d.language) {
-                let r = ui.selectable_label(d.voice == v.id, v.name).on_hover_text(v.description);
-                if r.clicked() {
-                    d.voice = v.id.to_string();
+            for (engine, heading) in [("neural", "Natural voices"), ("basic", "Basic voices (built in)")] {
+                ui.label(egui::RichText::new(heading).color(t.text_faint).size(11.0));
+                for v in voices.iter().filter(|v| v.language == d.language && v.engine == engine) {
+                    let label = if v.engine == "neural" && !v.installed { format!("{} (download)", v.name) } else { v.name.to_string() };
+                    let r = ui.selectable_label(d.voice == v.id, label).on_hover_text(v.description);
+                    if r.clicked() {
+                        d.voice = v.id.to_string();
+                    }
                 }
             }
         });
         auto.add("tts.voice", visible(ui, cb.response.rect), "Voice");
+        let natural = filmcraft_tts::catalog::find(&d.voice).is_some();
+        if natural && !installed {
+            ui.add_space(6.0);
+            egui::Frame::new().fill(t.field_bg).stroke(egui::Stroke::new(1.0, t.field_border)).corner_radius(4.0).inner_margin(8.0).show(ui, |ui| {
+                ui.set_width(w - 18.0);
+                match &download {
+                    Some((frac, status)) => {
+                        ui.label(egui::RichText::new(status).color(t.text).size(11.5));
+                        ui.add(egui::ProgressBar::new(*frac).show_percentage());
+                        let b = ui.small_button("Cancel");
+                        auto.add("tts.download.cancel", visible(ui, b.rect), "Cancel download");
+                        if b.clicked() {
+                            actions.push(Action::CancelDownload);
+                        }
+                    }
+                    None if d.confirm_download => {
+                        let mb = filmcraft_tts::catalog::size() as f64 / 1e6;
+                        ui.label(egui::RichText::new(format!("Download the natural voices? {mb:.0} MB, once.")).color(t.text).size(12.0).strong());
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "From {} and github.com/cmusphinx/cmudict (pronunciations). Licence: {}. Every file is checked against a pinned SHA-256.",
+                                filmcraft_tts::catalog::SOURCE,
+                                filmcraft_tts::catalog::LICENSE
+                            ))
+                            .color(t.text_dim)
+                            .size(11.0),
+                        );
+                        ui.horizontal(|ui| {
+                            let ok = ui.button("Download");
+                            auto.add("tts.download.confirm", visible(ui, ok.rect), "Download");
+                            let no = ui.button("Cancel");
+                            if ok.clicked() {
+                                actions.push(Action::Download);
+                            }
+                            if no.clicked() {
+                                d.confirm_download = false;
+                            }
+                        });
+                    }
+                    None => {
+                        ui.label(egui::RichText::new("Natural voices need a one-time download.").color(t.text).size(11.5));
+                        let b = ui.button(format!("Download natural voices ({:.0} MB)…", filmcraft_tts::catalog::size() as f64 / 1e6));
+                        auto.add("tts.download", visible(ui, b.rect), "Download natural voices");
+                        if b.clicked() {
+                            d.confirm_download = true;
+                        }
+                    }
+                }
+            });
+        }
+        let voice_ready = !natural || installed;
         ui.add_space(4.0);
         let (r, resp) = ui.allocate_exact_size(vec2(130.0, 22.0), Sense::click());
         let col = if resp.hovered() { t.accent_hover } else { t.accent };
         icons::paint(ui.painter(), Rect::from_center_size(pos2(r.min.x + 8.0, r.center().y), vec2(14.0, 14.0)), Icon::Play, col);
         ui.painter().text(pos2(r.min.x + 22.0, r.center().y), Align2::LEFT_CENTER, "Hear this voice", Tokens::semibold(12.0), col);
         auto.add("tts.hearVoice", visible(ui, r), "Hear this voice");
-        if resp.clicked() {
+        if resp.clicked() && voice_ready && !busy {
             actions.push(Action::Run("tts.preview", json!({"sample": true, "voice": d.voice, "pitch": d.pitch.id(), "pace": d.pace}), true));
         }
         ui.add_space(8.0);
@@ -210,9 +385,10 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     // footer: Preview | Save
     let fy = rect.max.y - FOOTER_H + 10.0;
     let half = (rect.width() - PAD * 2.0 - 10.0) / 2.0;
-    let can_say = filmcraft_tts::check_text(&d.text).is_ok();
+    let natural = filmcraft_tts::catalog::find(&d.voice).is_some();
+    let can_say = filmcraft_tts::check_text(&d.text).is_ok() && (!natural || installed) && !busy;
     let pr = Rect::from_min_size(pos2(rect.min.x + PAD, fy), vec2(half, 28.0));
-    if button(ui, &t, pr, Icon::Play, "Preview", false, can_say, "tts-preview").clicked() && can_say {
+    if button(ui, &t, pr, Icon::Play, if busy { "Synthesizing…" } else { "Preview" }, false, can_say, "tts-preview").clicked() && can_say {
         actions.push(Action::Run("tts.preview", d.params(), true));
     }
     auto.add("tts.preview", pr, "Preview");
@@ -235,23 +411,24 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             Action::New => {
                 let keep = (app.ui.tts.language.clone(), app.ui.tts.voice.clone(), app.ui.tts.pitch, app.ui.tts.pace);
                 app.session.state.selection.clear();
-                app.ui.tts = TtsDraft { language: keep.0, voice: keep.1, pitch: keep.2, pace: keep.3, ..Default::default() };
+                let dl = app.ui.tts.download_job;
+                app.ui.tts = TtsDraft { language: keep.0, voice: keep.1, pitch: keep.2, pace: keep.3, download_job: dl, ..Default::default() };
             }
-            Action::Run(cmd, p, play) => match app.session.execute(cmd, p) {
-                Ok(r) => {
-                    if play {
-                        if let Err(e) = app.play_tts_preview() {
-                            app.ui.status = e;
-                        }
-                    } else {
-                        app.ui.status = match cmd {
-                            "tts.create" => format!("Narration added on {}", r["track"].as_str().unwrap_or("an audio track")),
-                            _ => "Narration updated".into(),
-                        };
-                    }
+            Action::Run(cmd, p, play) => start(app, cmd, p, play),
+            Action::Download => {
+                app.ui.tts.confirm_download = false;
+                match app.session.execute("tts.downloadVoices", json!({})) {
+                    Ok(r) => app.ui.tts.download_job = r["job"].as_u64(),
+                    Err(e) => app.ui.status = e.to_string(),
                 }
-                Err(e) => app.ui.status = e.to_string(),
-            },
+            }
+            Action::CancelDownload => {
+                if let Some(id) = app.ui.tts.download_job
+                    && let Some(j) = app.session.jobs.iter().find(|j| j.id == id)
+                {
+                    j.progress.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
         }
     }
 }

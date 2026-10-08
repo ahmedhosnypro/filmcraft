@@ -9,7 +9,12 @@
 //!
 //! Everything is deterministic: the same script and settings give the same samples.
 
+pub mod catalog;
 pub mod formant;
+#[cfg(feature = "kokoro")]
+pub mod kokoro;
+#[cfg(feature = "kokoro")]
+pub mod neural;
 pub mod script;
 
 use serde::Serialize;
@@ -38,6 +43,12 @@ pub enum TtsError {
     AudioTooLong,
     #[error("{0}")]
     Invalid(String),
+    #[error("voice model: {0}")]
+    Model(String),
+    #[error("the natural voices are not downloaded yet")]
+    NotInstalled,
+    #[error("natural voices are not available in this build (built without the `kokoro` feature)")]
+    Unavailable,
 }
 
 /// How a voice speaks.
@@ -114,7 +125,14 @@ pub trait Voice: Send + Sync {
 /// Languages offered (English only for now).
 pub const LANGUAGES: &[(&str, &str)] = &[("en-US", "English (United States)")];
 
-/// Every voice FilmCraft knows.
+/// Every voice FilmCraft knows: the built-in voices, then the neural voices (installed when their
+/// package is downloaded into `models_dir`).
+pub fn voices_in(models_dir: Option<&std::path::Path>) -> Vec<VoiceInfo> {
+    let installed = models_dir.is_some_and(catalog::installed) && cfg!(feature = "kokoro");
+    formant::VOICES.iter().map(|v| v.info).chain(catalog::VOICES.iter().map(|v| VoiceInfo { installed, ..v.info })).collect()
+}
+
+/// The built-in voices (always available).
 pub fn voices() -> Vec<VoiceInfo> {
     formant::VOICES.iter().map(|v| v.info).collect()
 }
@@ -126,6 +144,23 @@ pub fn voice(id: &str) -> Result<Box<dyn Voice>, TtsError> {
         .find(|v| v.info.id == id)
         .map(|v| Box::new(formant::FormantVoice::new(*v)) as Box<dyn Voice>)
         .ok_or_else(|| TtsError::UnknownVoice(id.to_string()))
+}
+
+/// The voice `id`: built in, or (feature `kokoro`) a neural voice from the package in `models_dir`.
+pub fn voice_in(id: &str, models_dir: Option<&std::path::Path>) -> Result<Box<dyn Voice>, TtsError> {
+    if catalog::find(id).is_some() {
+        #[cfg(feature = "kokoro")]
+        {
+            let dir = models_dir.ok_or(TtsError::NotInstalled)?;
+            return neural::load(id, dir).map(|v| Box::new(v) as Box<dyn Voice>);
+        }
+        #[cfg(not(feature = "kokoro"))]
+        {
+            let _ = models_dir;
+            return Err(TtsError::Unavailable);
+        }
+    }
+    voice(id)
 }
 
 /// The voice used when none is chosen.

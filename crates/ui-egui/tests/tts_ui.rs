@@ -77,6 +77,18 @@ impl Driver {
         self.ui()["ui"]["tts"].clone()
     }
 
+    /// Let a background synthesis job finish.
+    fn settle(&mut self) {
+        for _ in 0..400 {
+            if self.draft()["pending"].is_null() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            self.frames(1);
+        }
+        panic!("synthesis never finished");
+    }
+
     fn ids(&mut self, prefix: &str) -> Vec<String> {
         let v = self.ok("ui.elements", json!({"prefix": prefix}));
         v.as_array().unwrap().iter().filter_map(|e| e["id"].as_str().map(str::to_string)).collect()
@@ -128,6 +140,7 @@ fn write_add_click_to_edit_and_save_in_place() {
     // add it to the timeline
     d.exec("playhead.set", json!({"seconds": 1.0}));
     d.click("tts.save");
+    d.settle();
     let clips = d.narration_clips();
     let status = d.ui()["ui"]["status"].clone();
     assert_eq!(clips.len(), 1, "one narration clip; status {status}");
@@ -154,6 +167,7 @@ fn write_add_click_to_edit_and_save_in_place() {
     d.ok("ui.key", json!({"key": "Cmd+A"}));
     d.type_text("A new script for the same clip.");
     d.click("tts.save");
+    d.settle();
     let after = d.exec("tts.inspect", json!({"clip": clip}));
     assert_eq!(after["narration"]["text"], "A new script for the same clip.");
     assert_ne!(after["item"], before);
@@ -177,6 +191,7 @@ fn settings_controls_and_hear_this_voice() {
     assert!(d.narration_clips().is_empty());
     // Hear this voice runs a preview (the headless harness has no audio output: a status line)
     d.click("tts.hearVoice");
+    d.settle();
     let status = d.ui()["ui"]["status"].as_str().unwrap_or_default().to_string();
     assert!(status.contains("audio output") || status.is_empty(), "{status}");
     // Advanced folds away and back

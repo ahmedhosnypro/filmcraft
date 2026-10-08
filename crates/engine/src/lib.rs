@@ -350,6 +350,8 @@ pub struct Session {
     pub voiceover: voiceover::VoiceOver,
     /// The last `tts.preview` result, for the host to play (Text to Speech ▸ Preview).
     pub tts_preview: Option<Arc<filmcraft_tts::Audio>>,
+    /// Synthesized narrations (`tts.render` fills it from a background job).
+    pub tts_cache: narration::SynthCache,
     /// Dynamic (J/K/L) trimming and trim-mode loop playback in progress.
     pub trim_play: trim::TrimPlayback,
     /// Keyboard shortcuts (active bindings, presets; `shortcuts.*` commands).
@@ -453,6 +455,7 @@ impl Session {
             mcrec: Default::default(),
             voiceover: Default::default(),
             tts_preview: None,
+            tts_cache: Default::default(),
             trim_play: Default::default(),
             shortcuts: shortcuts::Shortcuts::new(),
             offline: Default::default(),

@@ -2217,8 +2217,14 @@ dependencies = [
 name = "filmcraft-tts"
 version = "0.3.0"
 dependencies = [
+ "candle-core",
+ "candle-nn",
+ "filmcraft-audio-dsp",
+ "filmcraft-tts-text",
  "serde",
+ "serde_json",
  "thiserror 2.0.21",
+ "zip",
 ]
 
 [[package]]

@@ -347,3 +347,52 @@ fn the_narration_is_heard_in_the_mix() {
     assert!(rms > 0.01, "narration audible, rms {rms}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn render_fills_the_cache_that_create_and_preview_use() {
+    let mut s = demo();
+    let dir = tmp("render");
+    let p = json!({"text": "Rendered in the background.", "voice": "basic-male", "pace": 1.1});
+    let r = s.execute("tts.render", json!({"text": "Rendered in the background.", "voice": "basic-male", "pace": 1.1, "wait": true})).unwrap();
+    let job = r["job"].as_u64().expect("a job");
+    let j = s.jobs.iter().find(|j| j.id == job).unwrap();
+    assert!(j.progress.finished.load(std::sync::atomic::Ordering::Relaxed));
+    assert!(matches!(&*j.result.lock().unwrap(), Some(Ok(_))));
+    // the same settings are now cached: render again is a no-op, preview hands back the same audio
+    assert_eq!(s.execute("tts.render", p.clone()).unwrap()["cached"], true);
+    s.execute("tts.preview", p.clone()).unwrap();
+    let cached = s.tts_cache.lock().unwrap().last().unwrap().1.clone();
+    assert!(std::sync::Arc::ptr_eq(s.tts_preview.as_ref().unwrap(), &cached));
+    let mut q = p.clone();
+    q["dir"] = json!(dir);
+    q["time"] = json!(0);
+    let c = s.execute("tts.create", q).unwrap();
+    assert_eq!(c["speechDuration"], Tick::from_units(cached.samples.len() as i64, RATE).0);
+    // a failing render reports the error in the job
+    let r = s.execute("tts.render", json!({"text": "x", "voice": "kokoro-heart", "wait": true}));
+    if let Ok(r) = r {
+        let job = r["job"].as_u64().unwrap();
+        let j = s.jobs.iter().find(|j| j.id == job).unwrap();
+        assert!(matches!(&*j.result.lock().unwrap(), Some(Err(_))) || cfg!(feature = "neural-voices"));
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn natural_voices_are_listed_and_explain_what_is_missing() {
+    let mut s = demo();
+    let v = s.execute("tts.voices", json!({})).unwrap();
+    let ids: Vec<&str> = v["voices"].as_array().unwrap().iter().map(|x| x["id"].as_str().unwrap()).collect();
+    assert!(ids.contains(&"kokoro-heart") && ids.contains(&"kokoro-michael"), "{ids:?}");
+    assert_eq!(v["package"]["id"], "kokoro-82m");
+    assert!(v["package"]["size"].as_u64().unwrap() > 300_000_000);
+    assert_eq!(v["package"]["available"], cfg!(feature = "neural-voices"));
+    if !v["package"]["installed"].as_bool().unwrap() {
+        let e = s.execute("tts.create", json!({"text": "Hi.", "voice": "kokoro-heart"})).unwrap_err().to_string();
+        assert!(e.contains("download") || e.contains("not available"), "{e}");
+    }
+    if !cfg!(feature = "neural-voices") && !v["package"]["installed"].as_bool().unwrap() {
+        let e = s.execute("tts.downloadVoices", json!({})).unwrap_err().to_string();
+        assert!(e.contains("not available in this build"), "{e}");
+    }
+}
