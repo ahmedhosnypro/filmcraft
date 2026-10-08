@@ -234,6 +234,11 @@ pub fn phonemize(text: &str, lang: Lang, lex: &Lexicon, overrides: &Overrides) -
                 sentence.push(Token::Punct('.'));
                 flush_sentence(&mut sentence, &mut chunks, lex, &overrides, lang);
             }
+            Token::SentenceEndWith(c) => {
+                // `?` and `!` shape Kokoro's intonation; keep them.
+                sentence.push(Token::Punct(c));
+                flush_sentence(&mut sentence, &mut chunks, lex, &overrides, lang);
+            }
             Token::Pause { millis } => {
                 flush_sentence(&mut sentence, &mut chunks, lex, &overrides, lang);
                 chunks.push(Chunk::Pause { millis });
@@ -280,7 +285,7 @@ fn flush_sentence(sentence: &mut Vec<Token>, chunks: &mut Vec<Chunk>, lex: &Lexi
                     out.push(*c);
                 }
             }
-            Token::Pause { .. } | Token::SentenceEnd => {}
+            Token::Pause { .. } | Token::SentenceEnd | Token::SentenceEndWith(_) => {}
         }
     }
     for piece in split_long_chunk(out) {
@@ -699,9 +704,11 @@ fn letter_to_sound(word: &str) -> Option<String> {
     // -ture / -sure endings (nature, measure): the e belongs to the suffix, so it
     // is handled before the silent-e rule.
     if letters.len() >= 5 {
-        let tail: String = letters[letters.len() - 4..].iter().collect();
+        let tail_chars = letters.get(letters.len() - 4..)?;
+        let tail: String = tail_chars.iter().collect();
         if tail == "ture" || tail == "sure" {
-            let head: String = letters[..letters.len() - 4].iter().collect();
+            let head_chars = letters.get(..letters.len() - 4)?;
+            let head: String = head_chars.iter().collect();
             let mut body = letter_to_sound(&head).unwrap_or_default();
             if !body.is_empty() && !body.contains('ˈ') {
                 // mark the head's first vowel
@@ -719,8 +726,11 @@ fn letter_to_sound(word: &str) -> Option<String> {
     let mut chars = letters.clone();
     let mut long_last = false;
     let mut last_vowel_index: Option<usize> = None;
-    let ends_consonant_le = chars.len() >= 3 && *chars.last()? == 'e' && chars[chars.len() - 2] == 'l' && !is_vowel_letter(chars[chars.len() - 3]);
-    if !ends_consonant_le && chars.len() >= 3 && *chars.last()? == 'e' && !is_vowel_letter(chars[chars.len() - 2]) {
+    let ends_consonant_le = chars.len() >= 3
+        && chars.last() == Some(&'e')
+        && chars.get(chars.len() - 2) == Some(&'l')
+        && chars.get(chars.len() - 3).is_some_and(|c| !is_vowel_letter(*c));
+    if !ends_consonant_le && chars.len() >= 3 && chars.last() == Some(&'e') && chars.get(chars.len() - 2).is_some_and(|c| !is_vowel_letter(*c)) {
         chars.pop();
         long_last = true;
         last_vowel_index = chars.iter().rposition(|c| is_vowel_letter(*c));
@@ -730,14 +740,16 @@ fn letter_to_sound(word: &str) -> Option<String> {
     let mut vowel_positions: Vec<usize> = Vec::new();
     let mut i = 0usize;
     while i < n {
-        let rest = &chars[i..];
+        let Some(rest) = chars.get(i..) else { break };
         let rest_str: String = rest.iter().collect();
         let at_start = i == 0;
         // Multi-letter rules first (longest match wins).
         if rest_str.ends_with("tion") && rest_str.len() == 4 {
             // The vowel before the suffix takes the primary stress.
-            if let Some(&last) = vowel_positions.last() {
-                out[last] = format!("ˈ{}", out[last]);
+            if let Some(&last) = vowel_positions.last()
+                && let Some(v) = out.get_mut(last)
+            {
+                *v = format!("ˈ{v}");
             }
             out.push("ʃ".into());
             out.push("ə".into());
@@ -745,8 +757,10 @@ fn letter_to_sound(word: &str) -> Option<String> {
             break;
         }
         if rest_str.ends_with("sion") && rest_str.len() == 4 {
-            if let Some(&last) = vowel_positions.last() {
-                out[last] = format!("ˈ{}", out[last]);
+            if let Some(&last) = vowel_positions.last()
+                && let Some(v) = out.get_mut(last)
+            {
+                *v = format!("ˈ{v}");
             }
             out.push("ʒ".into());
             out.push("ə".into());
@@ -901,7 +915,8 @@ fn letter_to_sound(word: &str) -> Option<String> {
             }
             _ => {}
         }
-        let c = chars[i];
+        let Some(c) = chars.get(i) else { break };
+        let c = *c;
         if is_vowel_letter(c) {
             // Vowel digraphs.
             let digraph: String = rest.iter().take(2).collect();
@@ -960,7 +975,7 @@ fn letter_to_sound(word: &str) -> Option<String> {
             'q' => {
                 out.push("k".into());
             }
-            'l' if i + 2 == n && chars.get(i + 1) == Some(&'e') && i > 0 && !is_vowel_letter(chars[i - 1]) => {
+            'l' if i + 2 == n && chars.get(i + 1) == Some(&'e') && i > 0 && chars.get(i - 1).is_some_and(|c| !is_vowel_letter(*c)) => {
                 // "little", "castle": the final "le" is a syllable əl.
                 out.push("ə".into());
                 out.push("l".into());
@@ -1010,8 +1025,9 @@ fn letter_to_sound(word: &str) -> Option<String> {
     // Primary stress on the first vowel if not already marked.
     if !collapsed.iter().any(|s| s.contains('ˈ') || s.contains('ˌ'))
         && let Some(pos) = collapsed.iter().position(|s| is_vowel_kokoro(s))
+        && let Some(v) = collapsed.get_mut(pos)
     {
-        collapsed[pos] = format!("ˈ{}", collapsed[pos]);
+        *v = format!("ˈ{v}");
     }
     Some(collapsed.join(""))
 }
@@ -1212,8 +1228,8 @@ PERCENT  P ER0 S EH1 N T
             ("hello, world.", "həlˈO, wˈɜɹld."),
             ("hello $ world", "həlˈO wˈɜɹld"),
             ("end.", "ˈɛnd."),
-            ("Wow!", "wˈO."),
-            ("Really?", "ɹˈilɪ."),
+            ("Wow!", "wˈO!"),
+            ("Really?", "ɹˈilɪ?"),
             ("a: b; c", "ə: bˈi; sˈi"),
             ("Tom & Jerry", "tˈɑm ænd ʤˈɛɹɪ"),
             ("Version 2. Next.", "vˈɛɹʒən tˈu. nˈɛkst."),

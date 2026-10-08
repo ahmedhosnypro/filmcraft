@@ -20,8 +20,12 @@ pub enum Token {
         /// Pause length in milliseconds, capped at 10 s.
         millis: u32,
     },
-    /// A sentence boundary (`.`, `!`, `?` — never after an abbreviation or inside a number).
+    /// A sentence boundary ending in a period (never after an abbreviation or
+    /// inside a number).
     SentenceEnd,
+    /// A sentence boundary with an explicit terminator (`?` or `!`), which Kokoro
+    /// reads for intonation. Added in M7.11; `SentenceEnd` keeps meaning `.`.
+    SentenceEndWith(char),
     /// Punctuation kept for prosody downstream.
     Punct(char),
 }
@@ -110,13 +114,29 @@ pub fn normalize(text: &str, lang: Lang) -> Result<Vec<Token>, NormalizeError> {
                 push_words(&mut out, &frac);
             }
             '.' | '!' | '?' => {
-                // A run of terminators is one sentence end. Abbreviations and numbers
-                // consume their own '.' earlier, so a leftover one ends a sentence.
+                // A run of terminators is one sentence end; the strongest one wins
+                // (`?` over `!` over `.`) so "Really?!" keeps its intonation mark.
+                // Abbreviations and numbers consume their own '.' earlier, so a
+                // leftover one ends a sentence.
+                let mut question = false;
+                let mut bang = false;
                 while matches!(peek(text.get(pos..).unwrap_or(""), 0), Some('.' | '!' | '?')) {
+                    match peek(text.get(pos..).unwrap_or(""), 0) {
+                        Some('?') => question = true,
+                        Some('!') => bang = true,
+                        _ => {}
+                    }
                     pos += 1;
                 }
-                if out.last() != Some(&Token::SentenceEnd) {
-                    out.push(Token::SentenceEnd);
+                let terminator = if question {
+                    Token::SentenceEndWith('?')
+                } else if bang {
+                    Token::SentenceEndWith('!')
+                } else {
+                    Token::SentenceEnd
+                };
+                if !matches!(out.last(), Some(Token::SentenceEnd) | Some(Token::SentenceEndWith(_))) {
+                    out.push(terminator);
                 }
             }
             _ if is_word_char(c) => match parse_wordish(rest, lang) {
@@ -833,8 +853,8 @@ fn english_ordinal(value: u64) -> String {
         "nine" => "ninth",
         "twelve" => "twelfth",
         t if t.ends_with('y') => {
-            let ordinal = format!("{}ieth", &t[..t.len() - 1]);
-            return attach(stem, &format!("{prefix}{ordinal}"));
+            let stem = t.get(..t.len() - 1).unwrap_or(t);
+            return format!("{prefix}{stem}ieth");
         }
         t => return attach(stem, &format!("{prefix}{t}th")),
     };
@@ -1057,6 +1077,13 @@ mod tests {
                     }
                     s.push('|');
                 }
+                Token::SentenceEndWith(c) => {
+                    if !s.is_empty() {
+                        s.push(' ');
+                    }
+                    s.push('|');
+                    s.push(*c);
+                }
                 Token::Punct(c) => {
                     if !s.is_empty() {
                         s.push(' ');
@@ -1276,10 +1303,19 @@ mod tests {
     #[test]
     fn sentence_ends() {
         let tokens = normalize("Hi. Bye! What?", Lang::EnUs).unwrap();
-        assert_eq!(flat(&tokens), "Hi | Bye | What |");
-        // Runs of terminators are one end.
-        assert_eq!(flat(&normalize("Wow!!!", Lang::EnUs).unwrap()), "Wow |");
-        assert_eq!(flat(&normalize("Really?! Yes.", Lang::EnUs).unwrap()), "Really | Yes |");
+        assert_eq!(flat(&tokens), "Hi | Bye |! What |?");
+        // Runs of terminators are one end; the strongest terminator wins.
+        assert_eq!(flat(&normalize("Wow!!!", Lang::EnUs).unwrap()), "Wow |!");
+        assert_eq!(flat(&normalize("Really?! Yes.", Lang::EnUs).unwrap()), "Really |? Yes |");
+        // The terminator is carried through for intonation (M7.11 fix round).
+        assert_eq!(flat(&normalize("Go!", Lang::EnUs).unwrap()), "Go |!");
+        assert_eq!(flat(&normalize("Done.", Lang::EnUs).unwrap()), "Done |");
+        assert_eq!(flat(&normalize("Is it 1999?", Lang::EnUs).unwrap()), "Is it nineteen ninety-nine |?");
+        assert_eq!(flat(&normalize("Call 555-0134!", Lang::EnUs).unwrap()), "Call five five five zero one three four |!");
+        assert_eq!(flat(&normalize("Wait... what?", Lang::EnUs).unwrap()), "Wait | what |?");
+        assert_eq!(flat(&normalize("No!!", Lang::EnUs).unwrap()), "No |!");
+        assert_eq!(flat(&normalize("Are you there?!", Lang::EnUs).unwrap()), "Are you there |?");
+        assert_eq!(flat(&normalize("Yes?", Lang::EnGb).unwrap()), "Yes |?");
         // A decimal point is not a sentence end; an abbreviation's dot is consumed.
         assert_eq!(flat(&normalize("It costs 3.14 dollars.", Lang::EnUs).unwrap()), "It costs three point one four dollars |");
         assert_eq!(flat(&normalize("Mr. Smith called.", Lang::EnUs).unwrap()), "mister Smith called |");
@@ -1387,7 +1423,7 @@ mod tests {
     fn year_rule_survives_punctuation() {
         assert_eq!(words("1999.", Lang::EnUs), "nineteen ninety-nine |");
         assert_eq!(words("1999,", Lang::EnUs), "nineteen ninety-nine ,");
-        assert_eq!(words("1999!", Lang::EnUs), "nineteen ninety-nine |");
+        assert_eq!(words("1999!", Lang::EnUs), "nineteen ninety-nine |!");
         assert_eq!(words("(1999)", Lang::EnUs), "( nineteen ninety-nine )");
         assert_eq!(words("in 1999.", Lang::EnGb), "in nineteen ninety-nine |");
     }
