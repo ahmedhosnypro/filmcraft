@@ -442,7 +442,10 @@ fn pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
             let o = ld(p);
             let a = o.a;
             let na = 1.0 - a;
-            let k = select(0.0, na / a, a > 1e-6);
+            var k = 0.0;
+            if a > 1e-4 {
+                k = na / a;
+            }
             let blend = u.p0.x;
             return vec4(o.rgb * k, na * (1.0 - blend) + a * blend);
         }
