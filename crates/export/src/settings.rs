@@ -75,6 +75,18 @@ pub enum HardwareEncoding {
     Auto,
 }
 
+/// Whether the picture of an export may be composited on the GPU (`filmcraft-gpu`'s off-screen
+/// compositor) instead of the CPU reference renderer. Auto = use the GPU when the app registered
+/// a GPU frame renderer and the machine has an adapter; the CPU result is the fallback either
+/// way. Off = today's CPU behaviour exactly.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum GpuRendering {
+    #[default]
+    Auto,
+    Off,
+}
+
 /// Bitrate encoding of bitrate-driven codecs (H.264).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

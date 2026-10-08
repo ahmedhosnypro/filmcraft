@@ -12,7 +12,7 @@ use filmcraft_time::FrameRate;
 use rayon::prelude::*;
 
 use crate::settings::{ExportEffects, Placement, Scaling, TextOverlay};
-use crate::{ExportError, ExportSettings, Result};
+use crate::{ExportError, ExportSettings, FrameRenderer, GpuRendering, Result, build_frame_renderer, note_gpu_fallback, note_gpu_frame};
 
 /// Where the rendered picture lands in the output frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -52,6 +52,9 @@ impl Geometry {
 /// The immutable part of an export: everything needed to produce one output frame.
 pub(crate) struct Pipeline {
     pub project: Arc<Project>,
+    /// The registered frame renderer (GPU compositor) when the setting allows and a factory
+    /// provided one; guarded because `frame` runs on several export threads at once.
+    renderer: Option<std::sync::Mutex<Box<dyn FrameRenderer>>>,
     pub seq: ItemId,
     /// Output frame rate (frame `f` is at `rate.tick_of(f)`).
     pub rate: FrameRate,
@@ -94,7 +97,9 @@ impl Pipeline {
         } else {
             None
         };
+        let renderer = if settings.gpu_rendering == GpuRendering::Off { None } else { build_frame_renderer().map(std::sync::Mutex::new) };
         Ok(Pipeline {
+            renderer,
             seq_rate: q.settings.frame_rate,
             start_tc: q.start_timecode,
             drop_frame: q.settings.drop_frame,
@@ -116,7 +121,27 @@ impl Pipeline {
     /// R'G'B' floats (3 per pixel).
     pub fn frame(&self, f: i64, sources: &dyn SourceProvider) -> (Vec<u8>, Vec<f32>) {
         let t = self.rate.tick_of(f);
-        let img = filmcraft_render::render_sequence(&self.project, self.seq, t, self.opts, sources);
+        // The registered GPU renderer goes first; `None` (no adapter, a plan the GPU cannot
+        // draw, any internal error) falls back to the CPU reference renderer below.
+        let gpu = match self.renderer.as_ref() {
+            Some(r) => {
+                let mut r = r.lock().unwrap_or_else(|e| e.into_inner());
+                r.render(&self.project, self.seq, t, self.opts, sources)
+            }
+            None => None,
+        };
+        let img = match gpu {
+            Some(img) => {
+                note_gpu_frame();
+                img
+            }
+            None => {
+                if self.renderer.is_some() {
+                    note_gpu_fallback();
+                }
+                filmcraft_render::render_sequence(&self.project, self.seq, t, self.opts, sources)
+            }
+        };
         let mut img = self.place(img);
         self.overlays(&mut img, t);
         let lim = &self.effects.video_limiter;

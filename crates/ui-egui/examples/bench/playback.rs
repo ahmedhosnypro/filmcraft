@@ -217,6 +217,12 @@ pub fn ms(d: Duration) -> f64 {
 }
 
 pub fn load_avg() -> String {
+    if let Ok(s) = std::fs::read_to_string("/proc/loadavg") {
+        let parts: Vec<&str> = s.split_whitespace().take(3).collect();
+        if !parts.is_empty() {
+            return parts.join(", ");
+        }
+    }
     Command::new("sysctl")
         .args(["-n", "vm.loadavg"])
         .output()
