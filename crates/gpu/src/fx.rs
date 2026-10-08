@@ -50,6 +50,7 @@ const OP_HFLIP: u32 = 26;
 const OP_VFLIP: u32 = 27;
 const OP_MIRROR: u32 = 28;
 const OP_OFFSET: u32 = 29;
+const OP_VIDEO_LIMITER: u32 = 30;
 
 type Target = (wgpu::Texture, wgpu::TextureView);
 
@@ -180,6 +181,9 @@ fn steps(op: &FxOp) -> Vec<Step> {
             if amount.abs() >= 1e-5 {
                 out.push(step(OP_VIGNETTE, [0; 4], &[*amount, *midpoint, *roundness, *feather, target[0], target[1], target[2]]));
             }
+        }
+        FxOp::VideoLimiter { max, comp, axis, warn, warning_color } => {
+            out.push(step(OP_VIDEO_LIMITER, [*axis, *warn as u32, 0, 0], &[*max, *comp, warning_color[0], warning_color[1], warning_color[2]]));
         }
     }
     out

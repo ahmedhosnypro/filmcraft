@@ -41,6 +41,9 @@ fn fl(v: f64) -> ParamValue {
 fn col(r: f32, g: f32, b: f32) -> ParamValue {
     ParamValue::Color([r, g, b, 1.0])
 }
+fn ch(c: u32) -> ParamValue {
+    ParamValue::Choice(c)
+}
 fn pt(x: f64, y: f64) -> ParamValue {
     ParamValue::Vec2(Vec2::new(x, y))
 }
@@ -195,6 +198,22 @@ fn cases() -> Vec<(&'static str, Vec<(&'static str, ParamValue)>, bool)> {
             false,
         ),
         ("vignette", vec![("amount", fl(40.0)), ("midpoint", fl(90.0)), ("roundness", fl(100.0)), ("feather", fl(100.0))], false),
+        ("video_limiter", vec![], false),
+        ("video_limiter", vec![("axis", ch(0)), ("clip_level", ch(0)), ("compression", ch(0))], false),
+        ("video_limiter", vec![("axis", ch(1)), ("clip_level", ch(9)), ("compression", ch(4))], false),
+        ("video_limiter", vec![("axis", ch(2)), ("clip_level", ch(5)), ("compression", ch(2))], false),
+        ("video_limiter", vec![("axis", ch(3)), ("clip_level", ch(0)), ("compression", ch(1))], false),
+        (
+            "video_limiter",
+            vec![
+                ("axis", ch(2)),
+                ("clip_level", ch(0)),
+                ("compression", ch(0)),
+                ("gamut_warning", ParamValue::Bool(true)),
+                ("warning_color", col(0.0, 1.0, 0.0)),
+            ],
+            false,
+        ),
     ]
 }
 
@@ -331,6 +350,10 @@ fn hostile_parameters_are_bounded() {
         effect("vignette", &[("midpoint", fl(f64::INFINITY))]),
         effect("vignette", &[("roundness", fl(f64::NAN))]),
         effect("vignette", &[("feather", fl(f64::NAN))]),
+        effect("video_limiter", &[("clip_level", fl(f64::NAN))]),
+        effect("video_limiter", &[("compression", fl(f64::INFINITY))]),
+        effect("video_limiter", &[("axis", fl(f64::NAN))]),
+        effect("video_limiter", &[("warning_color", ParamValue::Color([f32::NAN, 0.0, 0.0, 1.0]))]),
     ];
     for e in &nan {
         let op = FxOp::eval(e, &cx(Tick::ZERO, 1.0), w, h);

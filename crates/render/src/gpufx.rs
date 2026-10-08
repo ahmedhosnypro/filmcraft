@@ -168,6 +168,13 @@ pub enum FxOp {
         feather: f32,
         target: [f32; 3],
     },
+    VideoLimiter {
+        max: f32,
+        comp: f32,
+        axis: u32,
+        warn: bool,
+        warning_color: [f32; 3],
+    },
 }
 
 /// Effect ids [`FxOp::eval`] understands (the GPU-capable standard effects).
@@ -204,6 +211,7 @@ pub const GPU_EFFECTS: &[&str] = &[
     "color_replace",
     "alpha_adjust",
     "vignette",
+    "video_limiter",
 ];
 
 /// `Image::transformed` without the mip path: the destination rectangle it writes and the inverse.
@@ -434,6 +442,35 @@ impl FxOp {
                 let target = if amt < 0.0 { [col[0], col[1], col[2]] } else { [1.0; 3] };
                 FxOp::Vignette { amount: amt, midpoint: mid, roundness: round, feather, target }
             }
+            "video_limiter" => {
+                use crate::vfx::{bv, cv};
+                use filmcraft_project::ParamValue;
+                let clip_level = match e.param("clip_level").map(|p| p.value.clone()).or_else(|| crate::vfx::def_value(e, "clip_level")) {
+                    Some(ParamValue::Choice(c)) => c as f32,
+                    Some(ParamValue::Float(f)) => f as f32,
+                    _ => 0.0,
+                };
+                let comp_val = match e.param("compression").map(|p| p.value.clone()).or_else(|| crate::vfx::def_value(e, "compression")) {
+                    Some(ParamValue::Choice(c)) => [0.0, 0.03, 0.05, 0.10, 0.20][(c as usize).min(4)],
+                    Some(ParamValue::Float(f)) => f as f32,
+                    _ => 0.03,
+                };
+                let axis = match e.param("axis").map(|p| p.value.clone()).or_else(|| crate::vfx::def_value(e, "axis")) {
+                    Some(ParamValue::Choice(c)) => c,
+                    Some(ParamValue::Float(f)) => {
+                        if f.is_nan() {
+                            u32::MAX
+                        } else {
+                            f as u32
+                        }
+                    }
+                    _ => 3,
+                };
+                let warn = bv(e, "gamut_warning");
+                let c = cv(e, "warning_color", cx);
+                let wc = dec([c[0], c[1], c[2]]);
+                FxOp::VideoLimiter { max: 1.0 + clip_level / 100.0, comp: comp_val, axis, warn, warning_color: wc }
+            }
             _ => return None,
         })
     }
@@ -478,6 +515,7 @@ impl FxOp {
             FxOp::ColorReplace { sim, target, replace, replace_hsl, .. } => sim.is_finite() && fin(target) && fin(replace) && fin(replace_hsl),
             FxOp::AlphaAdjust { opacity, .. } => opacity.is_finite(),
             FxOp::Vignette { amount, midpoint, roundness, feather, target } => fin(&[*amount, *midpoint, *roundness, *feather]) && fin(target),
+            FxOp::VideoLimiter { max, comp, axis, warning_color, .. } => *axis <= 3 && max.is_finite() && comp.is_finite() && fin(warning_color),
         }
     }
 
@@ -753,8 +791,79 @@ impl FxOp {
                     dec(crate::vfx::lerp3(enc(c), target, edge * amt.abs()))
                 });
             }
+            FxOp::VideoLimiter { max, comp, axis, warn, warning_color } => {
+                let (max, comp, axis, warn, wc) = (*max, *comp, *axis, *warn, *warning_color);
+                if !max.is_finite() || !comp.is_finite() || !wc.iter().all(|c| c.is_finite()) {
+                    return;
+                }
+                img.map_rgb(|c, _, _| {
+                    let v = [linear_to_enc(c[0]), linear_to_enc(c[1]), linear_to_enc(c[2])];
+                    let out = limit(v, max, comp, axis);
+                    if warn && v.iter().zip(&out).any(|(a, b)| (a - b).abs() > 1e-4) {
+                        return wc;
+                    }
+                    out.map(enc_to_linear)
+                });
+            }
         }
     }
+}
+
+/// sRGB encoding that keeps values above 1 (super-whites) instead of clamping them.
+#[inline]
+fn linear_to_enc(v: f32) -> f32 {
+    if v <= 1.0 { filmcraft_color::linear_to_srgb(v.max(0.0)) } else { 1.0 + (v - 1.0) / 2.4 }
+}
+#[inline]
+fn enc_to_linear(v: f32) -> f32 {
+    if v <= 1.0 { filmcraft_color::srgb_to_linear(v.max(0.0)) } else { 1.0 + (v - 1.0) * 2.4 }
+}
+
+#[inline]
+fn knee(v: f32, max: f32, comp: f32) -> f32 {
+    let k = max * (1.0 - comp);
+    if comp <= 0.0 || v <= k {
+        return v.min(max);
+    }
+    let r = max - k;
+    k + r * (1.0 - (-(v - k) / r).exp())
+}
+
+pub(crate) fn limit(v: [f32; 3], max: f32, comp: f32, axis: u32) -> [f32; 3] {
+    let m = filmcraft_color::Matrix::Bt709;
+    let ycc = filmcraft_color::rgb_to_ycbcr(v[0], v[1], v[2], m);
+    let (kr, kb) = (0.2126f32, 0.0722f32);
+    let to_rgb = |y: f32, cb: f32, cr: f32| {
+        let r = y + 2.0 * (1.0 - kr) * cr;
+        let b = y + 2.0 * (1.0 - kb) * cb;
+        let g = (y - kr * r - kb * b) / (1.0 - kr - kb);
+        [r, g, b]
+    };
+    let (mut y, mut cb, mut cr) = (ycc[0], ycc[1], ycc[2]);
+    if axis != 1 {
+        y = knee(y.max(0.0), max, comp);
+    }
+    if axis != 0 {
+        // scale chroma so every channel fits 0…max (the gamut of legal R′G′B′)
+        let rgb = to_rgb(y, cb, cr);
+        let mut s = 1.0f32;
+        for &ch in &rgb {
+            let d = ch - y;
+            if ch > max && d > 1e-6 {
+                s = s.min(((max - y) / d).max(0.0));
+            }
+            if ch < 0.0 && d < -1e-6 {
+                s = s.min((y / -d).max(0.0));
+            }
+        }
+        if axis == 3 && s < 1.0 - 1e-4 {
+            // smart limit: soft chroma compression rather than a hard cut
+            s = knee(s, 1.0, comp.max(0.03)).min(1.0);
+        }
+        cb *= s;
+        cr *= s;
+    }
+    to_rgb(y, cb, cr).map(|q| q.clamp(0.0, max))
 }
 
 /// The body of `Image::transformed` (no mip path) for a precomputed inverse and rectangle.
