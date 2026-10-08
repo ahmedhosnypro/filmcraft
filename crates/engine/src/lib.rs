@@ -28,6 +28,7 @@ pub mod media_browser;
 pub mod media_pool;
 pub mod mixer;
 pub mod multicam;
+pub mod narration;
 pub mod panels;
 pub mod perf;
 pub mod presets;
@@ -347,6 +348,8 @@ pub struct Session {
     pub mcrec: multicam::Recorder,
     /// Voice-over recording: the input device and the take in progress.
     pub voiceover: voiceover::VoiceOver,
+    /// The last `tts.preview` result, for the host to play (Text to Speech ▸ Preview).
+    pub tts_preview: Option<Arc<filmcraft_tts::Audio>>,
     /// Dynamic (J/K/L) trimming and trim-mode loop playback in progress.
     pub trim_play: trim::TrimPlayback,
     /// Keyboard shortcuts (active bindings, presets; `shortcuts.*` commands).
@@ -449,6 +452,7 @@ impl Session {
             mixrec: Default::default(),
             mcrec: Default::default(),
             voiceover: Default::default(),
+            tts_preview: None,
             trim_play: Default::default(),
             shortcuts: shortcuts::Shortcuts::new(),
             offline: Default::default(),
@@ -1053,6 +1057,8 @@ mod media_test_util;
 mod mixer_tests;
 #[cfg(test)]
 mod multicam_tests;
+#[cfg(test)]
+mod narration_tests;
 #[cfg(test)]
 mod nest_editing_tests;
 #[cfg(test)]

@@ -1874,6 +1874,7 @@ dependencies = [
  "filmcraft-testkit",
  "filmcraft-text",
  "filmcraft-time",
+ "filmcraft-tts",
  "image",
  "log",
  "serde",
@@ -2213,6 +2214,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "filmcraft-tts"
+version = "0.2.1"
+dependencies = [
+ "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "filmcraft-ui-egui"
 version = "0.3.0"
 dependencies = [
@@ -2236,6 +2245,7 @@ dependencies = [
  "filmcraft-scopes",
  "filmcraft-text",
  "filmcraft-time",
+ "filmcraft-tts",
  "image",
  "log",
  "pollster 0.4.0",
