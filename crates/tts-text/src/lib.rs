@@ -20,5 +20,7 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
 mod normalize;
+pub mod phonemize;
 
 pub use normalize::{Lang, NormalizeError, Token, normalize};
+pub use phonemize::{Chunk, LexError, Lexicon, MAX_CHUNK_CHARS, Overrides, SYMBOLS, phonemize};
