@@ -187,6 +187,14 @@ fn cases() -> Vec<(&'static str, Vec<(&'static str, ParamValue)>, bool)> {
         ("alpha_adjust", vec![("opacity", fl(60.0))], false),
         ("alpha_adjust", vec![("ignore", ParamValue::Bool(true)), ("invert", ParamValue::Bool(true))], false),
         ("alpha_adjust", vec![("invert", ParamValue::Bool(true)), ("mask_only", ParamValue::Bool(true)), ("opacity", fl(150.0))], false),
+        ("vignette", vec![], false),
+        ("vignette", vec![("amount", fl(-100.0)), ("midpoint", fl(50.0)), ("roundness", fl(0.0)), ("feather", fl(50.0))], false),
+        (
+            "vignette",
+            vec![("amount", fl(-30.0)), ("midpoint", fl(20.0)), ("roundness", fl(-100.0)), ("feather", fl(0.0)), ("color", col(0.1, 0.4, 0.7))],
+            false,
+        ),
+        ("vignette", vec![("amount", fl(40.0)), ("midpoint", fl(90.0)), ("roundness", fl(100.0)), ("feather", fl(100.0))], false),
     ]
 }
 
@@ -319,6 +327,10 @@ fn hostile_parameters_are_bounded() {
         // minifying resamples (the CPU's mip path) stay on the CPU
         effect("transform", &[("scale_height", fl(20.0))]),
         effect("crop", &[("left", fl(-300.0)), ("zoom", ParamValue::Bool(true))]),
+        effect("vignette", &[("amount", fl(f64::NAN))]),
+        effect("vignette", &[("midpoint", fl(f64::INFINITY))]),
+        effect("vignette", &[("roundness", fl(f64::NAN))]),
+        effect("vignette", &[("feather", fl(f64::NAN))]),
     ];
     for e in &nan {
         let op = FxOp::eval(e, &cx(Tick::ZERO, 1.0), w, h);

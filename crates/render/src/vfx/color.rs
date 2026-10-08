@@ -189,34 +189,6 @@ pub(crate) fn limit(v: [f32; 3], max: f32, comp: f32, axis: u32) -> [f32; 3] {
     to_rgb(y, cb, cr).map(|q| q.clamp(0.0, max))
 }
 
-/// Vignette: darkens (negative Amount, towards Color) or lightens the frame edges.
-pub fn vignette(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
-    let amt = fv(e, "amount", cx) / 100.0;
-    if amt.abs() < 1e-5 {
-        return;
-    }
-    let mid = fv(e, "midpoint", cx) / 100.0;
-    let round = fv(e, "roundness", cx) / 100.0;
-    let feather = (fv(e, "feather", cx) / 100.0).max(0.01);
-    let col = cv(e, "color", cx);
-    let target = if amt < 0.0 { [col[0], col[1], col[2]] } else { [1.0; 3] };
-    let (w, h) = (img.w as f32, img.h as f32);
-    let aspect = w / h;
-    img.map_rgb(|c, x, y| {
-        let mut nx = (x as f32 + 0.5) / w * 2.0 - 1.0;
-        let ny = (y as f32 + 0.5) / h * 2.0 - 1.0;
-        // roundness 100 = circle; 0 = an ellipse following the frame; −100 = squarer
-        if round > 0.0 {
-            nx *= 1.0 + (aspect - 1.0) * round;
-        }
-        let p = if round < 0.0 { 2.0 + (-round) * 6.0 } else { 2.0 };
-        // 0 at the centre, 1 at the corners
-        let d = (nx.abs().powf(p) + ny.abs().powf(p)).powf(1.0 / p) / 2f32.powf(1.0 / p);
-        let edge = smoothstep(mid - feather * 0.5, mid + feather * 0.5, d);
-        dec(lerp3(enc(c), target, edge * amt.abs()))
-    });
-}
-
 /// Logo Cutout: removes a flat white/black/custom background by un-multiplying it — the alpha of
 /// a pixel is how far it is from the background towards the gamut edge, and the colour is
 /// recovered as if it had been composited over that background.

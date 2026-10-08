@@ -36,6 +36,7 @@ const OP_ASC_CDL: u32 = 15u;
 const OP_CHANNEL_MIX: u32 = 16u;
 const OP_COLOR_REPLACE: u32 = 17u;
 const OP_ALPHA_ADJUST: u32 = 18u;
+const OP_VIGNETTE: u32 = 19u;
 const OP_BOX: u32 = 20u;
 const OP_DIRECTIONAL: u32 = 22u;
 const OP_UNSHARP: u32 = 23u;
@@ -466,6 +467,36 @@ fn pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
             let q = sample_clamped(uu, vv);
             let o = ld(p);
             return q + (o - q) * u.p0.z;
+        }
+        case OP_VIGNETTE: {
+            let o = ld(p);
+            let a = o.a;
+            if a <= 1e-6 {
+                return o;
+            }
+            let amt = u.p0.x;
+            if abs(amt) < 1e-5 {
+                return o;
+            }
+            let mid = u.p0.y;
+            let round = u.p0.z;
+            let feather = u.p0.w;
+            let tgt = u.p1.xyz;
+            let w = f32(s.x);
+            let h = f32(s.y);
+            let aspect = w / h;
+            var nx = pc.x / w * 2.0 - 1.0;
+            let ny = pc.y / h * 2.0 - 1.0;
+            if round > 0.0 {
+                nx *= 1.0 + (aspect - 1.0) * round;
+            }
+            let p_exp = select(2.0, 2.0 + (-round) * 6.0, round < 0.0);
+            let d = powf(powf(abs(nx), p_exp) + powf(abs(ny), p_exp), 1.0 / p_exp) / powf(2.0, 1.0 / p_exp);
+            let edge = smoothstep_fx(mid - feather * 0.5, mid + feather * 0.5, d);
+            let c = o.rgb / a;
+            let ec = enc(c);
+            let res = dec(ec + (tgt - ec) * (edge * abs(amt)));
+            return vec4(res * a, a);
         }
         default: {
             let o = ld(p);

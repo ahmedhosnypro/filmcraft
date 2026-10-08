@@ -161,6 +161,13 @@ pub enum FxOp {
         invert: bool,
         mask_only: bool,
     },
+    Vignette {
+        amount: f32,
+        midpoint: f32,
+        roundness: f32,
+        feather: f32,
+        target: [f32; 3],
+    },
 }
 
 /// Effect ids [`FxOp::eval`] understands (the GPU-capable standard effects).
@@ -196,6 +203,7 @@ pub const GPU_EFFECTS: &[&str] = &[
     "channel_mix",
     "color_replace",
     "alpha_adjust",
+    "vignette",
 ];
 
 /// `Image::transformed` without the mip path: the destination rectangle it writes and the inverse.
@@ -415,6 +423,17 @@ impl FxOp {
                 use crate::vfx::{bv, fv};
                 FxOp::AlphaAdjust { opacity: fv(e, "opacity", cx) / 100.0, ignore: bv(e, "ignore"), invert: bv(e, "invert"), mask_only: bv(e, "mask_only") }
             }
+            "vignette" => {
+                use crate::vfx::{cv, fv};
+                let amt = fv(e, "amount", cx) / 100.0;
+                let mid = fv(e, "midpoint", cx) / 100.0;
+                let round = fv(e, "roundness", cx) / 100.0;
+                let raw_feather = fv(e, "feather", cx);
+                let feather = if raw_feather.is_finite() { (raw_feather / 100.0).max(0.01) } else { raw_feather };
+                let col = cv(e, "color", cx);
+                let target = if amt < 0.0 { [col[0], col[1], col[2]] } else { [1.0; 3] };
+                FxOp::Vignette { amount: amt, midpoint: mid, roundness: round, feather, target }
+            }
             _ => return None,
         })
     }
@@ -458,6 +477,7 @@ impl FxOp {
             FxOp::ChannelMix { m } => m.iter().all(|r| fin(r)),
             FxOp::ColorReplace { sim, target, replace, replace_hsl, .. } => sim.is_finite() && fin(target) && fin(replace) && fin(replace_hsl),
             FxOp::AlphaAdjust { opacity, .. } => opacity.is_finite(),
+            FxOp::Vignette { amount, midpoint, roundness, feather, target } => fin(&[*amount, *midpoint, *roundness, *feather]) && fin(target),
         }
     }
 
@@ -707,6 +727,30 @@ impl FxOp {
                     } else {
                         p.copy_from_slice(&[c[0] * a, c[1] * a, c[2] * a, a]);
                     }
+                });
+            }
+            FxOp::Vignette { amount, midpoint, roundness, feather, target } => {
+                let (amt, mid, round, feather, target) = (*amount, *midpoint, *roundness, *feather, *target);
+                if !amt.is_finite() || !mid.is_finite() || !round.is_finite() || !feather.is_finite() || !target.iter().all(|c| c.is_finite()) {
+                    return;
+                }
+                if amt.abs() < 1e-5 {
+                    return;
+                }
+                let (w, h) = (img.w as f32, img.h as f32);
+                let aspect = w / h;
+                img.map_rgb(|c, x, y| {
+                    let mut nx = (x as f32 + 0.5) / w * 2.0 - 1.0;
+                    let ny = (y as f32 + 0.5) / h * 2.0 - 1.0;
+                    // roundness 100 = circle; 0 = an ellipse following the frame; −100 = squarer
+                    if round > 0.0 {
+                        nx *= 1.0 + (aspect - 1.0) * round;
+                    }
+                    let p = if round < 0.0 { 2.0 + (-round) * 6.0 } else { 2.0 };
+                    // 0 at the centre, 1 at the corners
+                    let d = (nx.abs().powf(p) + ny.abs().powf(p)).powf(1.0 / p) / 2f32.powf(1.0 / p);
+                    let edge = crate::vfx::smoothstep(mid - feather * 0.5, mid + feather * 0.5, d);
+                    dec(crate::vfx::lerp3(enc(c), target, edge * amt.abs()))
                 });
             }
         }

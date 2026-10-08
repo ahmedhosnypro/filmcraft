@@ -40,6 +40,7 @@ const OP_ASC_CDL: u32 = 15;
 const OP_CHANNEL_MIX: u32 = 16;
 const OP_COLOR_REPLACE: u32 = 17;
 const OP_ALPHA_ADJUST: u32 = 18;
+const OP_VIGNETTE: u32 = 19;
 const OP_BOX: u32 = 20;
 const OP_DIRECTIONAL: u32 = 22;
 const OP_UNSHARP: u32 = 23;
@@ -174,6 +175,11 @@ fn steps(op: &FxOp) -> Vec<Step> {
         }
         FxOp::AlphaAdjust { opacity, ignore, invert, mask_only } => {
             out.push(step(OP_ALPHA_ADJUST, [*ignore as u32, *invert as u32, *mask_only as u32, 0], &[*opacity]));
+        }
+        FxOp::Vignette { amount, midpoint, roundness, feather, target } => {
+            if amount.abs() >= 1e-5 {
+                out.push(step(OP_VIGNETTE, [0; 4], &[*amount, *midpoint, *roundness, *feather, target[0], target[1], target[2]]));
+            }
         }
     }
     out
