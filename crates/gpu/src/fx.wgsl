@@ -442,8 +442,9 @@ fn pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
             let o = ld(p);
             let a = o.a;
             let na = 1.0 - a;
+            // (the CPU's threshold; `na / a` is only used when a > 1e-6)
             var k = 0.0;
-            if a > 1e-4 {
+            if a > 1e-6 {
                 k = na / a;
             }
             let blend = u.p0.x;
