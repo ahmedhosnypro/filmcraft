@@ -458,7 +458,7 @@ impl Default for ExportSettings {
             h264_level: None,
             bitrate_mode: BitrateMode::default(),
             hardware_encoding: HardwareEncoding::default(),
-            gpu_rendering: GpuRendering::Auto,
+            gpu_rendering: GpuRendering::Off,
             max_bitrate_kbps: None,
             adaptive_bitrate: None,
             keyframe_distance: None,
