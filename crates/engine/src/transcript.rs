@@ -77,11 +77,7 @@ fn can_download(_: &Session) -> std::result::Result<(), String> {
 
 /// The media item behind a project item (subclips resolve to their parent).
 fn media_item(s: &Session, item: ItemId) -> Option<ItemId> {
-    match &s.project.item(item)?.kind {
-        ItemKind::Media(_) => Some(item),
-        ItemKind::Subclip { parent, .. } => media_item(s, *parent),
-        _ => None,
-    }
+    s.project.resolve_media(item).map(|(root, _, _)| root)
 }
 
 fn ids_p(p: &Value, k: &str) -> Option<Vec<ItemId>> {

@@ -23,13 +23,13 @@ undocumented_unsafe_blocks = "deny"
 [dependencies]
 filmcraft-codecs = { workspace = true }
 filmcraft-color = { workspace = true }
+filmcraft-export = { workspace = true }
 filmcraft-frame = { workspace = true }
 filmcraft-isobmff = { workspace = true }
 filmcraft-time = { workspace = true }
 log = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-filmcraft-export = { workspace = true }
 objc2-core-foundation = "0.3.2"
 objc2-core-media = "0.3.2"
 objc2-core-video = "0.3.2"
@@ -53,8 +53,5 @@ windows = { version = "0.62", features = [
 filmcraft-testkit = { workspace = true }
 filmcraft-media = { workspace = true }
 filmcraft-frame = { workspace = true }
-
-[target.'cfg(target_os = "macos")'.dev-dependencies]
 filmcraft-project = { workspace = true }
 filmcraft-render = { workspace = true }
-filmcraft-time = { workspace = true }

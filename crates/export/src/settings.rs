@@ -62,8 +62,9 @@ impl H264Profile {
 }
 
 /// Export ▸ Hardware encoding: whether H.264 may be encoded by the system's hardware video encoder
-/// (VideoToolbox on macOS) instead of FilmCraft's own encoder. Off by default: hardware encoders make
-/// different streams, and exports are otherwise byte-identical from run to run and machine to machine.
+/// (VideoToolbox on macOS, NVENC on NVIDIA GPUs on Windows) instead of FilmCraft's own encoder. Off
+/// by default: hardware encoders make different streams, and exports are otherwise byte-identical
+/// from run to run and machine to machine.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum HardwareEncoding {
@@ -381,7 +382,7 @@ impl ExportSettings {
         .max(100);
         let max = match self.bitrate_mode {
             BitrateMode::Cbr => target,
-            _ => self.max_bitrate_kbps.filter(|m| *m >= target).unwrap_or(target * 3 / 2),
+            _ => self.max_bitrate_kbps.filter(|m| *m >= target).unwrap_or_else(|| (u64::from(target) * 3 / 2).min(u64::from(u32::MAX)) as u32),
         };
         let keyint = self.keyframe_distance.filter(|k| *k > 0).unwrap_or_else(|| (fps * 2.0).round().max(1.0) as u32);
         let channels = match self.audio.channels {

@@ -267,9 +267,9 @@ pub struct ExportSettings {
     /// stream needs is raised.
     pub h264_level: Option<u8>,
     pub bitrate_mode: BitrateMode,
-    /// May H.264 be encoded by the system's hardware encoder (VideoToolbox on macOS)? Off unless
-    /// asked for: hardware output depends on the machine, so it is not byte-reproducible like the
-    /// built-in encoder's (`determinism_tests`).
+    /// May H.264 be encoded by the system's hardware encoder (VideoToolbox on macOS, NVENC on
+    /// Windows)? Off unless asked for: hardware output depends on the machine, so it is not
+    /// byte-reproducible like the built-in encoder's (`determinism_tests`).
     #[serde(default)]
     pub hardware_encoding: HardwareEncoding,
     /// VBR maximum bitrate (None = 1.5 × target).
@@ -474,6 +474,28 @@ impl Default for ExportSettings {
 impl ExportSettings {
     /// Reject settings the encoders cannot honour.
     pub fn validate(&self) -> Result<()> {
+        if let Some(range) = self.range {
+            validate_range(range)?;
+        }
+        if !self.scale.is_finite() || self.scale <= 0.0 {
+            return Err(ExportError::Unsupported("output scale must be finite and positive".into()));
+        }
+        if let Some((width, height)) = self.frame_size {
+            filmcraft_project::validate_frame_size(width, height).map_err(ExportError::Unsupported)?;
+        }
+        if let Some(rate) = self.frame_rate
+            && (rate.num <= 0
+                || rate.den <= 0
+                || rate.as_f64() > 1000.0
+                || rate.num > i64::from(u32::MAX)
+                || rate.den > i64::from(u32::MAX)
+                || (i128::from(filmcraft_time::TICKS_PER_SECOND) * i128::from(rate.den) / i128::from(rate.num.max(1))) > i128::from(Tick::MAX.0))
+        {
+            return Err(ExportError::Unsupported("output frame rate must be positive and at most 1000 fps".into()));
+        }
+        if self.audio.sample_rate.is_some_and(|rate| rate == 0 || rate > 384_000) {
+            return Err(ExportError::Unsupported("output sample rate must be between 1 and 384000 Hz".into()));
+        }
         if self.field_order != FieldOrder::Progressive && self.has_video() {
             return Err(ExportError::Unsupported(format!("{} field order: FilmCraft's encoders write progressive frames", self.field_order.label())));
         }
@@ -599,6 +621,41 @@ fn video_factories() -> &'static RwLock<Vec<EncoderFactory>> {
 fn audio_factories() -> &'static RwLock<Vec<AudioEncoderFactory>> {
     static F: OnceLock<RwLock<Vec<AudioEncoderFactory>>> = OnceLock::new();
     F.get_or_init(|| RwLock::new(vec![aac_factory]))
+}
+
+/// Hardware encoder counters (`perf.stats` `export.hardware`): pictures encoded by hardware
+/// encoders, encoders created, and requests a hardware encoder declined (the software encoder
+/// took them).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HwEncodeStats {
+    pub frames: u64,
+    pub sessions: u64,
+    pub declined: u64,
+}
+
+static HW_FRAMES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static HW_SESSIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static HW_DECLINED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The hardware encoder counters so far.
+pub fn hw_encode_stats() -> HwEncodeStats {
+    use std::sync::atomic::Ordering::Relaxed;
+    HwEncodeStats { frames: HW_FRAMES.load(Relaxed), sessions: HW_SESSIONS.load(Relaxed), declined: HW_DECLINED.load(Relaxed) }
+}
+
+/// A hardware encoder encoded a picture.
+pub fn note_hw_encode_frame() {
+    HW_FRAMES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// A hardware encoder was created.
+pub fn note_hw_encode_session() {
+    HW_SESSIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// A hardware encoder declined a request (the software encoder takes it).
+pub fn note_hw_encode_declined() {
+    HW_DECLINED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Register a video encoder factory (tried before the built-in ones and those registered earlier).
@@ -1121,7 +1178,7 @@ fn h264_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSetti
     cfg.keyint = s.keyframe_distance.filter(|k| *k > 0).unwrap_or_else(|| (rate.num as f64 / rate.den as f64 * 2.0).round().max(1.0) as u32);
     cfg.slices = h264_slices(h);
     let kbps = s.bitrate_kbps.max(100);
-    let max = s.max_bitrate_kbps.filter(|m| *m >= kbps).unwrap_or(kbps * 3 / 2);
+    let max = s.max_bitrate_kbps.filter(|m| *m >= kbps).unwrap_or_else(|| (u64::from(kbps) * 3 / 2).min(u64::from(u32::MAX)) as u32);
     cfg.rate = match s.bitrate_mode {
         BitrateMode::Cbr => filmcraft_h264enc::RateControl::Cbr { kbps },
         _ => filmcraft_h264enc::RateControl::Vbr { target_kbps: kbps, max_kbps: max },
@@ -1160,13 +1217,30 @@ fn h264_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSetti
 /// The range to export (settings → In/Out → whole sequence).
 pub fn export_range(project: &Project, seq: ItemId, settings: &ExportSettings) -> Result<TimeRange> {
     let q = project.sequence(seq).ok_or(ExportError::NoSequence)?;
+    q.check_bounds().map_err(ExportError::Unsupported)?;
     if let Some(r) = settings.range {
+        validate_range(r)?;
         return Ok(r);
     }
     let fd = q.settings.frame_rate.frame_duration();
     let a = q.mark_in.unwrap_or(Tick::ZERO);
-    let b = q.mark_out.map(|o| o + fd).unwrap_or(q.duration());
-    Ok(TimeRange::from_bounds(a, b.max(a + fd)))
+    let minimum_end = a.0.checked_add(fd.0).ok_or_else(|| ExportError::Unsupported("export In point overflows the time range".into()))?;
+    let b = match q.mark_out {
+        Some(out) => out.0.checked_add(fd.0).ok_or_else(|| ExportError::Unsupported("export Out point overflows the time range".into()))?,
+        None => q.duration().0,
+    };
+    let duration = b.max(minimum_end).checked_sub(a.0).ok_or_else(|| ExportError::Unsupported("export range duration overflows".into()))?;
+    let range = TimeRange::new(a, Tick(duration));
+    validate_range(range)?;
+    Ok(range)
+}
+
+/// Validate input time before frame/sample conversion or any `TimeRange::end` arithmetic.
+pub fn validate_range(range: TimeRange) -> Result<()> {
+    if range.start.0 < 0 || range.duration.0 <= 0 || range.start.0.checked_add(range.duration.0).is_none_or(|end| end > Tick::MAX.0) {
+        return Err(ExportError::Unsupported("export range must start at or after zero, have positive duration and end within supported time bounds".into()));
+    }
+    Ok(())
 }
 
 /// Output frames `[f0, f1)` of `range` at `rate` (frame `f` is at `rate.tick_of(f)`).

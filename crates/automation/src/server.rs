@@ -403,7 +403,7 @@ impl FilmcraftMcp {
                     let (w, h) =
                         g.active_sequence().map(|q| (q.settings.width, q.settings.height)).ok_or_else(|| AutomationError::Other("no sequence".into()))?;
                     let scale = (max as f32 / w.max(h) as f32).min(1.0);
-                    let img = g.render_program_at(scale, t).ok_or_else(|| AutomationError::Other("no sequence".into()))?;
+                    let img = g.try_render_program_at(scale, t).map_err(|e| AutomationError::Other(e.to_string()))?;
                     png_rgba(img.w as u32, img.h as u32, img.over_black_rgba8(), max)
                 })
                 .await

@@ -441,7 +441,7 @@ impl Default for TimelinePrefs {
             surround_media_tracks: "useFile".into(),
             multichannel_mono_media_tracks: "useFile".into(),
             focus_timeline_on_edit: false,
-            snap_playhead: false,
+            snap_playhead: true,
             return_to_beginning: true,
             out_of_sync_unlinked: false,
             play_after_rendering: true,

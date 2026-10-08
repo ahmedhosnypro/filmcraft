@@ -395,7 +395,23 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: Val
     if let Err(e) = &r {
         app.ui.status = e.clone();
     }
+    if r.is_ok() && matches!(id, "edit.copy" | "edit.cut") {
+        put_clip_names_on_system_clipboard(app, ctx);
+    }
     r
+}
+
+/// Copied clips live in the session, but on Windows and Linux Ctrl+V only reaches the app when the
+/// system clipboard holds text (an empty clipboard sends no paste at all, #199). Put the copied
+/// clip names there, like other editors put their own data on the clipboard, so Ctrl+V pastes the
+/// clips right after a copy.
+fn put_clip_names_on_system_clipboard(app: &FilmcraftApp, ctx: &egui::Context) {
+    let names: Vec<&str> = app.session.state.clipboard.iter().map(|(_, _, c)| c.name.as_str()).collect();
+    if names.is_empty() {
+        return;
+    }
+    let text = names.join("\n");
+    ctx.copy_text(if text.trim().is_empty() { format!("{} clips", names.len()) } else { text });
 }
 
 /// A menu tree entry for display / `ui.menu.list`.

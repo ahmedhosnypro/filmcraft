@@ -667,8 +667,9 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
                     *k = v as u32;
                 }
             });
-            // The operating system's hardware encoder where there is one (macOS); everything it does
-            // not take (two-pass, HDR, MXF) and every machine without one keeps the built-in encoder.
+            // The system's hardware encoder where there is one (VideoToolbox on macOS, NVENC on NVIDIA
+            // GPUs on Windows); everything it does not take (two-pass, HDR, MXF) and every machine
+            // without one keeps the built-in encoder.
             // H.265 has only the hardware encoder: choosing the format is the opt-in.
             if !hevc {
                 row(ui, t, "Hardware Encoding", |ui| {

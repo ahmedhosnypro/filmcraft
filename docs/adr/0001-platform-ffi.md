@@ -18,17 +18,17 @@ Using it needs FFI into C / Objective-C APIs, which is `unsafe` Rust. The bindin
 ## Decision
 
 Allow `unsafe` in exactly one crate, `crates/platform` (`filmcraft-platform`, layer L5), for one
-job: OS media FFI (hardware decoding now, hardware encoding later). Audio output, dialogs, menus
+job: OS media FFI (hardware decoding, and hardware encoding through NVENC). Audio output, dialogs, menus
 and other OS integration do not go in it.
 
 Containment rules:
 
 1. The crate does not use `lints.workspace = true`. Its own `[lints]` table copies the workspace
    lints except `unsafe_code = "deny"` (not `forbid`), and adds
-   `clippy::undocumented_unsafe_blocks = "deny"`. Only the FFI modules (`videotoolbox`, and
-   `media_foundation::gpu` / `media_foundation::mft` on Windows) carry `#[allow(unsafe_code)]`; the
-   rest of the crate (the fallback logic in `hybrid`, the decoder logic in `media_foundation`,
-   `annexb`, `biplanar`) has no `unsafe`.
+   `clippy::undocumented_unsafe_blocks = "deny"`. Only the FFI modules (`videotoolbox`, `media_foundation::gpu` / `media_foundation::mft`, and
+   `nvenc::ffi` / `nvenc::session` on Windows) carry `#[allow(unsafe_code)]`; the rest of the crate
+   (the fallback logic in `hybrid`, the decoder logic in `media_foundation`, `annexb`, `biplanar`,
+   the encoder logic in `nvenc`) has no `unsafe`.
 2. Every `unsafe` block has a `// SAFETY:` comment saying why it is sound.
 3. The public API is safe: no `pub unsafe fn`, no raw pointers or FFI types in public signatures;
    failures are `Result`s. The crate keeps the never-crash `deny(clippy::unwrap_used, …)`
@@ -36,7 +36,7 @@ Containment rules:
 4. No panic crosses the FFI boundary: the VideoToolbox output callback runs under `catch_unwind`
    and reports a panic as a failed frame. The Windows backend has no callbacks into Rust (it drives
    a synchronous decoder MFT with `ProcessInput` / `ProcessOutput`), so nothing can unwind into
-   COM.
+   COM. NVENC loads the driver library at run time and has no callbacks into Rust either.
 5. The crate compiles on every target. OS bindings are target-specific dependencies (the
    `objc2-*` crates on macOS, the official `windows` crate on Windows: MIT OR Apache-2.0, already
    in the lockfile through wgpu / winit, with only the Win32 features the backend uses); elsewhere

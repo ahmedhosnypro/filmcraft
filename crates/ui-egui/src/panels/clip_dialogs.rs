@@ -1,6 +1,7 @@
 //! Edit / Clip / File menu dialogs (M3.10): Paste Attributes, Remove Attributes, Offline File,
 //! Make Subclip, Edit Subclip, Modify ▸ Audio Channels, Modify ▸ Timecode, Frame Hold Options,
-//! Field Options, Nest… (Nested Sequence Name), and the Close Project "save changes?" prompt.
+//! Field Options, Clip Speed / Duration, Nest… (Nested Sequence Name), and the Close Project
+//! "save changes?" prompt.
 //!
 //! The open dialog lives in `UiState::clip_dialog` (serde): the engine command it runs and the
 //! parameters being edited — the same JSON the command takes — so agents can open a dialog from
@@ -23,6 +24,8 @@
 //! - Frame Hold Options `frameHold.*`: `enabled`, `holdOn.<in|out|playhead|sourceTimecode|sequenceTime>`,
 //!   `timecode`, `holdFilters`;
 //! - Field Options `fieldOptions.*`: `reverseFieldDominance`, `processing.<none|alwaysDeinterlace|flickerRemoval>`;
+//! - Clip Speed / Duration `speedDuration.*`: `speed`, `reverse`, `ripple`,
+//!   `interpolation.<frameSampling|frameBlending|opticalFlow>`;
 //! - Close Project `closeProject.save`, `closeProject.dontSave`, `closeProject.cancel`.
 
 use egui::{Align2, RichText};
@@ -51,6 +54,7 @@ fn meta(command: &str) -> Option<(&'static str, &'static str)> {
         "clip.modifyTimecode" => ("Modify Clip: Timecode", "timecode"),
         "clip.frameHoldOptions" => ("Frame Hold Options", "frameHold"),
         "clip.fieldOptions" => ("Field Options", "fieldOptions"),
+        "clip.speedDuration" => ("Clip Speed / Duration", "speedDuration"),
         "file.closeProject" => ("Save Project", "closeProject"),
         _ => return None,
     })
@@ -182,6 +186,18 @@ fn defaults(app: &FilmcraftApp, id: &str) -> (Value, Value) {
             (json!({"enabled": enabled, "holdOn": "in", "timecode": tc, "holdFilters": hold_filters}), Value::Null)
         }
         "clip.fieldOptions" => (json!({"reverseFieldDominance": false, "processing": "none"}), Value::Null),
+        "clip.speedDuration" => {
+            // the first selected clip's current speed; its duration at that speed for the readout
+            let q = s.active_sequence();
+            let it = q.and_then(|q| s.state.selection.iter().find_map(|c| q.find_item(*c).map(|x| x.1.clone())));
+            let fps = q.map(|q| q.settings.frame_rate.as_f64()).unwrap_or(24.0);
+            let speed = it.as_ref().map_or(1.0, |i| i.speed);
+            let interp = it.as_ref().map_or(filmcraft_project::TimeInterpolation::default(), |i| i.time_interpolation);
+            (
+                json!({"speed": (speed.abs() * 100.0 * 100.0).round() / 100.0, "reverse": speed < 0.0, "ripple": false, "interpolation": interp.name()}),
+                json!({"duration": it.as_ref().map_or(0, |i| i.duration.0), "speed": speed.abs(), "fps": fps}),
+            )
+        }
         _ => (json!({}), Value::Null),
     }
 }
@@ -461,6 +477,31 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     push(&mut elems, format!("{pre}.processing.{k}"), &r, l);
                     if r.clicked() {
                         p["processing"] = json!(k);
+                    }
+                }
+            }
+            "clip.speedDuration" => {
+                number(ui, &mut elems, pre, p, "speed", "Speed:", 0.01..=100_000.0, " %");
+                // Duration follows the speed: the media shown stays the same
+                let (dur, was, fps) =
+                    (d.info["duration"].as_i64().unwrap_or(0), d.info["speed"].as_f64().unwrap_or(1.0), d.info["fps"].as_f64().unwrap_or(24.0));
+                let now = p["speed"].as_f64().unwrap_or(100.0) / 100.0;
+                if dur > 0 && now > 0.0 {
+                    let rate = filmcraft_time::FrameRate::from_f64(if fps > 0.0 { fps } else { 24.0 });
+                    let ticks = filmcraft_time::Tick((dur as f64 * was / now).round() as i64);
+                    ui.horizontal(|ui| {
+                        ui.label("Duration:");
+                        ui.label(RichText::new(filmcraft_time::format_timecode_frames(rate.frame_at(ticks), rate, false)).monospace());
+                    });
+                }
+                check(ui, &mut elems, pre, p, "reverse", "Reverse Speed", true);
+                check(ui, &mut elems, pre, p, "ripple", "Ripple Edit, Shifting Trailing Clips", true);
+                ui.label(RichText::new("Time Interpolation").strong());
+                for m in filmcraft_project::TimeInterpolation::ALL {
+                    let r = ui.radio(p["interpolation"].as_str() == Some(m.name()), m.label());
+                    push(&mut elems, format!("{pre}.interpolation.{}", m.name()), &r, m.label());
+                    if r.clicked() {
+                        p["interpolation"] = json!(m.name());
                     }
                 }
             }

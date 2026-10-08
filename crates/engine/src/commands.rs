@@ -164,6 +164,17 @@ pub(crate) fn u64_p(p: &Value, k: &str) -> Option<u64> {
     p.get(k).and_then(|v| v.as_u64().or_else(|| v.as_f64().map(|f| f as u64)))
 }
 
+/// Typed dimensions/counts must not truncate, wrap or silently accept negative/fractional values.
+/// Integer-valued floats (`1920.0`, as JSON from many clients) are integers.
+pub(crate) fn checked_u32_p(p: &Value, key: &str, cmd: &str) -> Result<Option<u32>> {
+    let Some(value) = p.get(key).filter(|v| !v.is_null()) else { return Ok(None) };
+    let exact = value
+        .as_u64()
+        .and_then(|v| u32::try_from(v).ok())
+        .or_else(|| value.as_f64().filter(|f| f.is_finite() && f.fract() == 0.0 && (0.0..=f64::from(u32::MAX)).contains(f)).map(|f| f as u32));
+    exact.map(Some).ok_or_else(|| bad(cmd, format!("`{key}` must be an unsigned 32-bit integer")))
+}
+
 /// Parse a time from params: `time` (ticks), `frame`, `seconds` or `timecode`, with `prefix`.
 pub(crate) fn time_p(s: &Session, p: &Value, prefix: &str) -> Option<Tick> {
     let rate = s.sequence_rate();
@@ -661,17 +672,17 @@ fn build() -> Vec<CommandSpec> {
                 if let Some(from) = item_p(p, "fromItem").and_then(|i| s.project.item(i)).and_then(|i| i.as_media()) {
                     st = default_seq_settings_for(&from.info);
                 }
-                if let Some(w) = u64_p(p, "width") {
-                    st.width = w as u32;
+                if let Some(w) = checked_u32_p(p, "width", "file.newSequence")? {
+                    st.width = w;
                 }
-                if let Some(h) = u64_p(p, "height") {
-                    st.height = h as u32;
+                if let Some(h) = checked_u32_p(p, "height", "file.newSequence")? {
+                    st.height = h;
                 }
                 if let Some(fps) = fps_p(p, "file.newSequence")? {
                     st.frame_rate = fps;
                 }
-                if let Some(sr) = u64_p(p, "sampleRate") {
-                    st.sample_rate = sr as u32;
+                if let Some(sr) = checked_u32_p(p, "sampleRate", "file.newSequence")? {
+                    st.sample_rate = sr;
                 }
                 if let Some(m) = str_p(p, "mix") {
                     st.audio_master =
@@ -685,13 +696,17 @@ fn build() -> Vec<CommandSpec> {
                     None => None,
                 };
                 st.preset = format!("{}x{} {}", st.width, st.height, st.frame_rate.label());
-                let nv = u64_p(p, "video").unwrap_or(3) as usize;
-                let na = u64_p(p, "audio").unwrap_or(3) as usize;
+                st.validate().map_err(|e| bad("file.newSequence", e))?;
+                let nv = checked_u32_p(p, "video", "file.newSequence")?.unwrap_or(3);
+                let na = checked_u32_p(p, "audio", "file.newSequence")?.unwrap_or(3);
+                if nv > 256 || na > 256 {
+                    return Err(bad("file.newSequence", "at most 256 video and 256 audio tracks are supported"));
+                }
                 let n = s.project.sequences().count() + 1;
                 let name = str_p(p, "name").map(str::to_string).unwrap_or_else(|| format!("Sequence {n:02}"));
                 let seq_label = s.prefs.labels.defaults.sequence;
                 let id = s.edit("New Sequence", |pr, st2| {
-                    let id = pr.new_sequence(&name, st, nv, na, None);
+                    let id = pr.new_sequence(&name, st, nv as usize, na as usize, None);
                     if let Some(it) = pr.item_mut(id) {
                         it.label = seq_label;
                     }
@@ -1515,22 +1530,22 @@ fn build() -> Vec<CommandSpec> {
                         pr.item_mut(id).ok_or(EngineError::NoSequence)?.name = n.to_string();
                     }
                     let q = pr.sequence_mut(id).ok_or(EngineError::NoSequence)?;
-                    if let Some(w) = u64_p(&p, "width") {
-                        q.settings.width = w as u32;
+                    if let Some(w) = checked_u32_p(&p, "width", "sequence.settings")? {
+                        q.settings.width = w;
                     }
-                    if let Some(h) = u64_p(&p, "height") {
-                        q.settings.height = h as u32;
+                    if let Some(h) = checked_u32_p(&p, "height", "sequence.settings")? {
+                        q.settings.height = h;
                     }
                     if let Some(f) = fps {
                         q.settings.frame_rate = f;
                     }
-                    if let Some(sr) = u64_p(&p, "sampleRate") {
-                        q.settings.sample_rate = sr as u32;
+                    if let Some(sr) = checked_u32_p(&p, "sampleRate", "sequence.settings")? {
+                        q.settings.sample_rate = sr;
                     }
                     if let Some(m) = mix {
                         q.settings.audio_master = m;
                     }
-                    Ok(())
+                    q.settings.validate().map_err(|e| bad("sequence.settings", e))
                 })?;
                 Ok(Value::Null)
             }
@@ -2209,7 +2224,7 @@ fn build() -> Vec<CommandSpec> {
             "Set Effect Parameter",
             [],
             None,
-            r##"{"clip":id,"effect":"motion"|index,"param":str,"mask":n?,"value":num|[x,y]|"#rrggbb"|bool|path,"time":ticks?}"##,
+            r##"{"clip":id,"effect":"motion"|index,"param":str,"mask":n?,"value":num|[x,y]|"#rrggbb"|bool|path,"time":ticks?,"merge":bool?,"begin":bool?}"##,
             has_seq,
             |s, p| {
                 let c = clip_p(p, "clip").ok_or_else(|| bad("effects.setParam", "need `clip`"))?;
@@ -2219,9 +2234,14 @@ fn build() -> Vec<CommandSpec> {
                 let ph = s.playhead();
                 let tl = time_p(s, p, "").unwrap_or(ph);
                 let pq = p.clone();
-                s.edit_sequence("Change Effect Parameter", |q, _, _| {
+                // `merge`: a drag of one parameter is one undo step (#201); `begin` starts a new one
+                let merge = bool_p(p, "merge").unwrap_or(false).then(|| format!("setParam:{}:{eff}:{pid}:{}", c.0, p.get("mask").unwrap_or(&Value::Null)));
+                if bool_p(p, "begin").unwrap_or(false) {
+                    s.history.merge_key = None;
+                }
+                s.edit_sequence_as("Change Effect Parameter", merge.as_deref(), |q, _, _| {
                     let (_, it) = q.find_item_mut(c).ok_or(filmcraft_edit::EditError::NoItem(c))?;
-                    let mt = it.source_time_at(tl.clamp(it.start, it.end() - Tick(1)));
+                    let mt = it.source_time_at(tl.clamp(it.start, (it.end() - Tick(1)).max(it.start)));
                     let e = match &eff {
                         Value::Number(n) => it.effects.get_mut(n.as_u64().unwrap_or(0) as usize),
                         Value::String(sid) => it.effects.iter_mut().find(|e| &e.effect == sid),
@@ -2252,7 +2272,7 @@ fn build() -> Vec<CommandSpec> {
             let ph = s.playhead();
             s.edit_sequence("Toggle Animation", |q, _, _| {
                 let (_, it) = q.find_item_mut(c).ok_or(filmcraft_edit::EditError::NoItem(c))?;
-                let mt = it.source_time_at(ph.clamp(it.start, it.end() - Tick(1)));
+                let mt = it.source_time_at(ph.clamp(it.start, (it.end() - Tick(1)).max(it.start)));
                 let e = match &eff {
                     Value::Number(n) => it.effects.get_mut(n.as_u64().unwrap_or(0) as usize),
                     Value::String(sid) => it.effects.iter_mut().find(|e| &e.effect == sid),
@@ -2519,7 +2539,7 @@ fn keyframe_op(s: &mut Session, p: &Value, op: &str) -> Result<Value> {
     };
     s.edit_sequence(label, |q, _, _| {
         let (_, it) = q.find_item_mut(c).ok_or(filmcraft_edit::EditError::NoItem(c))?;
-        let mt_now = it.source_time_at(ph.clamp(it.start, it.end() - Tick(1)));
+        let mt_now = it.source_time_at(ph.clamp(it.start, (it.end() - Tick(1)).max(it.start)));
         let e = match &eff {
             Value::Number(n) => it.effects.get_mut(n.as_u64().unwrap_or(0) as usize),
             Value::String(sid) => it.effects.iter_mut().find(|e| &e.effect == sid),

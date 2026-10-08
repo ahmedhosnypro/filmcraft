@@ -9,6 +9,20 @@ use serde_json::{Value, json};
 
 use crate::Session;
 
+#[test]
+fn hostile_export_ranges_are_rejected_without_panicking() {
+    let mut session = demo();
+    for params in [
+        json!({"range":"custom", "startTime":i64::MIN, "endTime":i64::MAX}),
+        json!({"range":"custom", "startTime":-1, "endTime":100}),
+        json!({"range":"custom", "startTime":100, "endTime":100}),
+    ] {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| session.execute("export.resolve", params)));
+        assert!(result.is_ok(), "a hostile export range must not panic");
+        assert!(result.unwrap().is_err());
+    }
+}
+
 /// A scratch directory under the workspace `target/`, removed when dropped.
 struct Scratch(PathBuf);
 
@@ -34,6 +48,20 @@ fn demo() -> Session {
     let mut s = Session::default();
     s.execute("file.openDemoProject", json!({})).unwrap();
     s
+}
+
+#[test]
+fn export_integer_parameters_cannot_wrap_or_overflow() {
+    let mut s = demo();
+    for name in ["bitrateKbps", "maxBitrateKbps", "keyframeDistance"] {
+        for value in [json!(-1), json!(1.5), json!(u64::from(u32::MAX) + 1)] {
+            let mut params = json!({});
+            params[name] = value;
+            assert!(s.execute("export.resolve", params).is_err(), "{name}");
+        }
+    }
+    assert!(s.execute("export.resolve", json!({"bitrateKbps":u32::MAX})).is_ok());
+    assert!(s.execute("export.resolve", json!({"bitrateKbps":8000.0, "keyframeDistance":48.0})).is_ok(), "integer-valued floats are integers");
 }
 
 fn probe(path: &str) -> Option<Value> {

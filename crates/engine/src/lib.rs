@@ -781,9 +781,20 @@ impl Session {
 
     /// Edit the active sequence with the edit-algebra context.
     pub fn edit_sequence<R>(&mut self, label: &str, f: impl FnOnce(&mut Sequence, &mut EditCtx, &mut EditorState) -> Result<R>) -> Result<R> {
+        self.edit_sequence_as(label, None, f)
+    }
+
+    /// [`Session::edit_sequence`] that shares one undo step with the previous edit of the same
+    /// `merge` key, like [`Session::edit_merged`] (a drag is one undoable change).
+    pub fn edit_sequence_as<R>(
+        &mut self,
+        label: &str,
+        merge: Option<&str>,
+        f: impl FnOnce(&mut Sequence, &mut EditCtx, &mut EditorState) -> Result<R>,
+    ) -> Result<R> {
         let seq_id = self.state.active_sequence.ok_or(EngineError::NoSequence)?;
         let media = self.media.clone();
-        self.edit(label, move |p, st| {
+        let body = move |p: &mut Project, st: &mut EditorState| {
             let project_snapshot = std::sync::Arc::new(p.clone());
             let snap = project_snapshot.clone();
             let durations = move |id: ItemId| -> Option<Tick> { media_duration(&project_snapshot, &media, id) };
@@ -800,7 +811,11 @@ impl Session {
                 s.check().map_err(EngineError::Other)?;
             }
             Ok(r)
-        })
+        };
+        match merge {
+            Some(key) => self.edit_merged(label, key, body),
+            None => self.edit(label, body),
+        }
     }
 
     pub fn undo(&mut self) -> Option<String> {
@@ -923,7 +938,7 @@ impl Session {
     /// Render the active sequence at the playhead in its working colour space (HDR values kept;
     /// for scopes and analysis).
     pub fn render_program_working(&self, scale: f32) -> Option<filmcraft_render::Image> {
-        let seq = self.state.active_sequence?;
+        let seq = self.renderable_sequence(scale).ok()?;
         let provider = self.media.provider(self.project.clone(), self.services.clone());
         let opts = filmcraft_render::RenderOptions { scale, working_output: true, ..Default::default() };
         Some(filmcraft_render::render_sequence(&self.project, seq, self.playhead(), opts, &provider))
@@ -935,13 +950,33 @@ impl Session {
     }
 
     /// Render the active sequence at `t` (snapped to its frame, as the playhead would be) without
-    /// moving the playhead (CPU reference path).
+    /// moving the playhead (CPU reference path). `None` when there is no sequence or the frame
+    /// cannot be rendered at `scale`; [`Session::try_render_program_at`] says why.
     pub fn render_program_at(&self, scale: f32, t: Tick) -> Option<filmcraft_render::Image> {
-        let seq = self.state.active_sequence?;
+        self.try_render_program_at(scale, t).ok()
+    }
+
+    /// [`Session::render_program_at`], with the reason when nothing can be rendered.
+    pub fn try_render_program_at(&self, scale: f32, t: Tick) -> Result<filmcraft_render::Image> {
+        let seq = self.renderable_sequence(scale)?;
         let t = self.sequence_rate().snap(t.max(Tick::ZERO));
         let provider = self.media.provider(self.project.clone(), self.services.clone());
         let opts = filmcraft_render::RenderOptions { scale, captions: true, ..Default::default() };
-        Some(filmcraft_render::render_sequence(&self.project, seq, t, opts, &provider))
+        Ok(filmcraft_render::render_sequence(&self.project, seq, t, opts, &provider))
+    }
+
+    /// The active sequence, if a frame of it at `scale` is within the image size limits.
+    fn renderable_sequence(&self, scale: f32) -> Result<ItemId> {
+        let id = self.state.active_sequence.ok_or(EngineError::NoSequence)?;
+        let seq = self.project.sequence(id).ok_or(EngineError::NoSequence)?;
+        if !scale.is_finite() || scale <= 0.0 {
+            return Err(EngineError::Other(format!("render scale {scale} must be finite and positive")));
+        }
+        let (w, h) = filmcraft_render::output_size(seq, scale);
+        let size = u32::try_from(w).ok().zip(u32::try_from(h).ok());
+        let Some((w, h)) = size else { return Err(EngineError::Other("the requested render frame exceeds the image size limits".into())) };
+        filmcraft_project::validate_frame_size(w, h).map_err(|e| EngineError::Other(format!("cannot render a {w}x{h} frame: {e}")))?;
+        Ok(id)
     }
 }
 

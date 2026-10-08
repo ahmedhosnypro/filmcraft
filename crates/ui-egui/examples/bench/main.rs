@@ -331,6 +331,7 @@ pub fn section_markdown(v: &Value) -> String {
                 ("realtime", "× real time"),
                 ("cpu_ms_per_frame", "CPU ms/frame"),
                 ("mbytes", "MB"),
+                ("hw_frames", "hw frames"),
                 ("load", "load"),
             ],
             2,

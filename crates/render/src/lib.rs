@@ -329,12 +329,7 @@ pub(crate) fn opacity_blend(item: &TrackItem, mt: Tick) -> (f32, Blend) {
 
 /// Size of an item's source at full resolution.
 pub fn source_size(project: &Project, item: ItemId) -> Option<(u32, u32)> {
-    match &project.item(item)?.kind {
-        ItemKind::Media(m) => m.info.video.as_ref().map(|v| (v.width, v.height)),
-        ItemKind::Sequence(s) => Some((s.settings.width, s.settings.height)),
-        ItemKind::AdjustmentLayer { width, height, .. } | ItemKind::Graphic { width, height, .. } => Some((*width, *height)),
-        ItemKind::Subclip { parent, .. } => source_size(project, *parent),
-    }
+    project.source_size(item)
 }
 
 /// The Motion transform of an item at media time `mt`, mapping full-res source pixels to
