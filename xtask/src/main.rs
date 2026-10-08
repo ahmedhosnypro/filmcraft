@@ -61,6 +61,7 @@ const LAYERS: &[(&str, u8)] = &[
     ("captions", 2),
     ("speech", 2),
     ("tts", 2),
+    ("tts-text", 2),
     ("interchange", 2),
     ("render", 3),
     ("gpu", 3),

@@ -2215,7 +2215,15 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-tts"
-version = "0.2.1"
+version = "0.3.0"
+dependencies = [
+ "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "filmcraft-tts-text"
+version = "0.3.0"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
