@@ -214,6 +214,89 @@ fn cases() -> Vec<(&'static str, Vec<(&'static str, ParamValue)>, bool)> {
             ],
             false,
         ),
+        (
+            "lumetri",
+            vec![
+                ("temperature", fl(20.0)),
+                ("tint", fl(-10.0)),
+                ("exposure", fl(0.5)),
+                ("contrast", fl(15.0)),
+                ("highlights", fl(-20.0)),
+                ("shadows", fl(25.0)),
+                ("whites", fl(10.0)),
+                ("blacks", fl(-15.0)),
+                ("saturation", fl(110.0)),
+                ("creative_on", ParamValue::Bool(false)),
+                ("vignette_on", ParamValue::Bool(false)),
+            ],
+            false,
+        ),
+        (
+            "lumetri",
+            vec![
+                ("basic_on", ParamValue::Bool(false)),
+                ("creative_sat", fl(120.0)),
+                ("vibrance", fl(30.0)),
+                ("faded_film", fl(25.0)),
+                ("shadow_tint", col(0.4, 0.45, 0.6)),
+                ("highlight_tint", col(0.6, 0.55, 0.4)),
+                ("vignette_on", ParamValue::Bool(false)),
+            ],
+            false,
+        ),
+        (
+            "lumetri",
+            vec![
+                ("basic_on", ParamValue::Bool(false)),
+                ("creative_on", ParamValue::Bool(false)),
+                ("vignette_amount", fl(-3.0)),
+                ("vignette_midpoint", fl(45.0)),
+                ("vignette_roundness", fl(-30.0)),
+                ("vignette_feather", fl(60.0)),
+            ],
+            false,
+        ),
+        (
+            "lumetri",
+            vec![
+                ("temperature", fl(-15.0)),
+                ("tint", fl(10.0)),
+                ("exposure", fl(0.3)),
+                ("contrast", fl(20.0)),
+                ("highlights", fl(-10.0)),
+                ("shadows", fl(15.0)),
+                ("whites", fl(-5.0)),
+                ("blacks", fl(5.0)),
+                ("saturation", fl(105.0)),
+                ("creative_sat", fl(110.0)),
+                ("vibrance", fl(20.0)),
+                ("faded_film", fl(15.0)),
+                ("shadow_tint", col(0.48, 0.5, 0.55)),
+                ("highlight_tint", col(0.52, 0.5, 0.45)),
+                ("vignette_amount", fl(2.0)),
+                ("vignette_midpoint", fl(50.0)),
+                ("vignette_roundness", fl(20.0)),
+                ("vignette_feather", fl(50.0)),
+            ],
+            false,
+        ),
+        (
+            "lumetri",
+            vec![("exposure", fl(4.0)), ("contrast", fl(100.0)), ("temperature", fl(100.0)), ("tint", fl(100.0)), ("whites", fl(100.0)), ("blacks", fl(100.0))],
+            false,
+        ),
+        (
+            "lumetri",
+            vec![
+                ("exposure", fl(-4.0)),
+                ("contrast", fl(-100.0)),
+                ("temperature", fl(-100.0)),
+                ("tint", fl(-100.0)),
+                ("whites", fl(-100.0)),
+                ("blacks", fl(-100.0)),
+            ],
+            false,
+        ),
     ]
 }
 
@@ -354,6 +437,10 @@ fn hostile_parameters_are_bounded() {
         effect("video_limiter", &[("compression", fl(f64::INFINITY))]),
         effect("video_limiter", &[("axis", fl(f64::NAN))]),
         effect("video_limiter", &[("warning_color", ParamValue::Color([f32::NAN, 0.0, 0.0, 1.0]))]),
+        effect("lumetri", &[("exposure", fl(f64::NAN))]),
+        effect("lumetri", &[("temperature", fl(f64::INFINITY))]),
+        effect("lumetri", &[("contrast", fl(f64::NAN))]),
+        effect("lumetri", &[("vignette_amount", fl(f64::NAN))]),
     ];
     for e in &nan {
         let op = FxOp::eval(e, &cx(Tick::ZERO, 1.0), w, h);
@@ -390,6 +477,67 @@ fn hostile_parameters_are_bounded() {
     assert_eq!(gpu.len(), w * h * 4);
     // a working image larger than any texture is refused, not attempted
     assert!(c.effect_image(&frame, &LayerFx { size: (1 << 20, 4), decimation: 1, ops: vec![FxOp::BlackWhite] }).is_none());
+}
+
+#[test]
+fn lumetri_unsupported_sections_fall_back() {
+    let (w, h) = (40usize, 24usize);
+    // sharpen > 0 and input LUT (explicitly required by brief)
+    let e = effect("lumetri", &[("sharpen", fl(10.0)), ("input_lut", ParamValue::Text("custom.cube".into()))]);
+    let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
+    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()), "sharpen > 0 and input_lut must fall back to CPU");
+
+    // sharpen alone
+    let e = effect("lumetri", &[("sharpen", fl(20.0))]);
+    let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
+    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
+
+    // input_lut alone
+    let e = effect("lumetri", &[("input_lut", ParamValue::Text("test.cube".into()))]);
+    let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
+    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
+
+    // look_lut
+    let e = effect("lumetri", &[("look_lut", ParamValue::Text("look.cube".into()))]);
+    let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
+    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
+
+    // look > 0
+    let e = effect("lumetri", &[("look", ch(1))]);
+    let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
+    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
+
+    // curve_luma modified
+    let e = effect("lumetri", &[("curve_luma", ParamValue::Curve(vec![[0.0, 0.1], [1.0, 0.9]]))]);
+    let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
+    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
+
+    // hue_vs_sat non-empty
+    let e = effect("lumetri", &[("hue_vs_sat", ParamValue::Curve(vec![[0.5, 0.5]]))]);
+    let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
+    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
+
+    // wheel offset
+    let e = effect("lumetri", &[("wheel_shadows", pt(0.5, 0.0))]);
+    let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
+    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
+
+    // wheel lightness
+    let e = effect("lumetri", &[("wheel_midtones_l", fl(20.0))]);
+    let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
+    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
+
+    // HSL secondary on
+    let e = effect("lumetri", &[("hsl_on", ParamValue::Bool(true))]);
+    let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
+    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
+
+    // HDR working space
+    let e = effect("lumetri", &[]);
+    let mut cx_hdr = cx(Tick::ZERO, 1.0);
+    cx_hdr.working = filmcraft_color::WorkingSpace::Rec2100Pq;
+    let op = FxOp::eval(&e, &cx_hdr, w, h);
+    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
 }
 
 /// Layers with effect chains in a composited plan — YUV and RGBA sources, a decimated working

@@ -40,11 +40,10 @@ pub(crate) fn f(e: &EffectInstance, id: &str, cx: &FxCtx) -> f32 {
 pub(crate) fn b(e: &EffectInstance, id: &str) -> bool {
     e.param(id).and_then(|p| p.value.as_bool()).unwrap_or(false)
 }
-/// A section switch (missing in older projects = on).
-fn on(e: &EffectInstance, id: &str) -> bool {
+pub(crate) fn on(e: &EffectInstance, id: &str) -> bool {
     e.param(id).and_then(|p| p.value.as_bool()).unwrap_or(true)
 }
-fn text<'e>(e: &'e EffectInstance, id: &str) -> &'e str {
+pub(crate) fn text<'e>(e: &'e EffectInstance, id: &str) -> &'e str {
     match e.param(id).map(|p| &p.value) {
         Some(ParamValue::Text(s)) => s,
         _ => "",
@@ -94,7 +93,7 @@ pub fn apply(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
         return;
     }
     // effects with a GPU implementation: evaluated parameters + CPU reference (`gpufx`)
-    if let Some(op) = crate::gpufx::FxOp::eval(e, cx, img.w, img.h) {
+    if let Some(op) = crate::gpufx::FxOp::eval(e, cx, img.w, img.h).filter(|op| e.effect != "lumetri" || op.gpu_ok()) {
         op.apply(img);
         return;
     }
@@ -575,9 +574,7 @@ pub(crate) fn key(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     });
 }
 
-/// The grading signal of the effect's section: HDR White (`white_id`) applies in HDR working
-/// spaces only.
-fn grade_space(e: &EffectInstance, cx: &FxCtx, white_id: &str) -> GradeSpace {
+pub(crate) fn grade_space(e: &EffectInstance, cx: &FxCtx, white_id: &str) -> GradeSpace {
     GradeSpace::new(cx.working, f(e, white_id, cx))
 }
 
@@ -1026,16 +1023,16 @@ fn hue_lut(points: &[[f32; 2]], n: usize) -> Option<Vec<f32>> {
     Some(lut[n..2 * n].to_vec())
 }
 
-fn curve_param(e: &EffectInstance, id: &str) -> Option<Vec<[f32; 2]>> {
+pub(crate) fn curve_param(e: &EffectInstance, id: &str) -> Option<Vec<[f32; 2]>> {
     e.param(id).and_then(|p| p.value.as_curve().map(|c| c.to_vec()))
 }
 
-fn is_identity_curve(c: &[[f32; 2]]) -> bool {
+pub(crate) fn is_identity_curve(c: &[[f32; 2]]) -> bool {
     c.iter().all(|p| (p[0] - p[1]).abs() < 1e-4)
 }
 
 /// Wheel offset (zero-mean RGB direction for a wheel position).
-fn wheel_rgb(v: Vec2) -> [f32; 3] {
+pub(crate) fn wheel_rgb(v: Vec2) -> [f32; 3] {
     let len = (v.x * v.x + v.y * v.y).sqrt().min(1.0) as f32;
     if len < 1e-5 {
         return [0.0; 3];

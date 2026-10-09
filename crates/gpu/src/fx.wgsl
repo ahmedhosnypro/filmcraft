@@ -10,6 +10,8 @@ struct U {
     p1: vec4<f32>,
     p2: vec4<f32>,
     p3: vec4<f32>,
+    p4: vec4<f32>,
+    p5: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> u: U;
@@ -47,6 +49,7 @@ const OP_VFLIP: u32 = 27u;
 const OP_MIRROR: u32 = 28u;
 const OP_OFFSET: u32 = 29u;
 const OP_VIDEO_LIMITER: u32 = 30u;
+const OP_LUMETRI: u32 = 31u;
 
 fn size() -> vec2<i32> {
     return vec2<i32>(i32(u.i0.y), i32(u.i0.z));
@@ -433,6 +436,95 @@ fn color_op(op: u32, c: vec3<f32>) -> vec3<f32> {
     }
 }
 
+fn lumetri_op(c: vec3<f32>, p: vec2<i32>) -> vec3<f32> {
+    let s = size();
+    let creative_on = u.i1.x != 0u;
+    let vignette_on = u.i1.y != 0u;
+
+    // white balance + exposure in linear light
+    let ge = u.p0.xyz;
+    let lin = c * ge;
+    var v = enc(lin);
+
+    // whites / blacks: endpoints
+    let b0 = u.p0.w;
+    let w0 = u.p1.x;
+    let denom = max(w0 - b0, 1e-3);
+    v = (v - vec3(b0)) / denom;
+
+    // highlights / shadows: luma-weighted lift/compress, hue preserving
+    let sh_k = u.p1.y;
+    let hl_k = u.p1.z;
+    let l = luma709(v);
+    let ws_val = clamp(1.0 - l, 0.0, 1.0);
+    let ws = ws_val * ws_val * ws_val;
+    let whl_val = clamp(l, 0.0, 1.0);
+    let whl = whl_val * whl_val * whl_val;
+    let nl = max(l + sh_k * ws + hl_k * whl, 0.0);
+    if l > 1e-5 {
+        let k = nl / l;
+        v = v * k;
+    }
+
+    // contrast: smooth S-curve around mid grey
+    let contrast = u.p1.w;
+    if abs(contrast) > 1e-4 {
+        let k = 1.0 + contrast;
+        let q = clamp(v, vec3(0.0), vec3(1.0));
+        let sc = q * q * (vec3(3.0) - 2.0 * q);
+        if k >= 1.0 {
+            v = q + (sc - q) * (k - 1.0);
+        } else {
+            v = vec3(0.5) + (q - vec3(0.5)) * k;
+        }
+    }
+
+    // faded film: lift blacks and compress
+    let faded = u.p2.x;
+    if faded > 0.0 {
+        v = v * (1.0 - 0.25 * faded) + vec3(0.12 * faded);
+    }
+
+    // split tone
+    if creative_on {
+        let st_k = u.p4.xyz;
+        let ht_k = u.p5.xyz;
+        let l2 = clamp(luma709(v), 0.0, 1.0);
+        v = v + st_k * (1.0 - l2) + ht_k * l2;
+    }
+
+    // saturation & vibrance
+    let sat = u.p2.y;
+    let vib = u.p2.z;
+    let l3 = luma709(v);
+    let cur_sat = max(max(v.x, v.y), v.z) - min(min(v.x, v.y), v.z);
+    let sat_mult = sat * (1.0 + vib * (1.0 - clamp(cur_sat, 0.0, 1.0)));
+    v = vec3(l3) + (v - vec3(l3)) * sat_mult;
+
+    // vignette
+    let va = u.p2.w;
+    if vignette_on && abs(va) > 1e-4 {
+        let vmid = u.p3.x;
+        let vfeather = u.p3.y;
+        let vround_aspect = u.p3.z;
+        let w = f32(s.x);
+        let h = f32(s.y);
+        let nx = (f32(p.x) / w - 0.5) * 2.0 * vround_aspect;
+        let ny = (f32(p.y) / h - 0.5) * 2.0;
+        let d = sqrt(nx * nx + ny * ny) / 1.4142135623730951;
+        let edge = clamp((d - vmid * 0.9) / (max(vfeather, 0.01) * 0.9), 0.0, 1.0);
+        let e2 = edge * edge * (3.0 - 2.0 * edge);
+        let k = 1.0 + va * 0.2 * e2;
+        if va < 0.0 {
+            v = v * max(k, 0.0);
+        } else {
+            v = v + (vec3(1.0) - v) * (k - 1.0);
+        }
+    }
+
+    return dec(v);
+}
+
 // One output pixel of every op but the running-sum box blur.
 fn pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
     let s = size();
@@ -606,6 +698,16 @@ fn pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
                 return vec4(warning_col * a, a);
             }
             let res = vec3(enc_to_linear_limiter(out_enc.x), enc_to_linear_limiter(out_enc.y), enc_to_linear_limiter(out_enc.z));
+            return vec4(res * a, a);
+        }
+        case OP_LUMETRI: {
+            let o = ld(p);
+            let a = o.a;
+            if a <= 1e-6 {
+                return o;
+            }
+            let c = o.rgb / a;
+            let res = lumetri_op(c, p);
             return vec4(res * a, a);
         }
         default: {
