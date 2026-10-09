@@ -237,7 +237,9 @@ impl std::fmt::Display for DevIconError {
         match self {
             DevIconError::Io(e) => write!(f, "{e}"),
             DevIconError::NoHome => write!(f, "no home directory for the user data dir"),
-            DevIconError::BadExecPath => write!(f, "the binary path has a character a desktop entry cannot carry (=, % or a control character), or is not valid UTF-8"),
+            DevIconError::BadExecPath => {
+                write!(f, "the binary path has a character a desktop entry cannot carry (=, % or a control character), or is not valid UTF-8")
+            }
         }
     }
 }
