@@ -260,6 +260,10 @@ pub struct EditorState {
     /// Selected captions (caption tracks / Captions panel).
     #[serde(default)]
     pub caption_selection: Vec<ClipId>,
+    /// Selected transitions (clicked in the Timeline): Effect Controls shows one, Delete removes
+    /// them. Selecting clips clears it and selecting transitions clears the clip selection.
+    #[serde(default)]
+    pub transition_selection: Vec<filmcraft_project::TransitionId>,
     /// Selected layers (indices among the graphic layers, 0 = back) of the selected graphic clip.
     #[serde(default)]
     pub graphic_layers: Vec<usize>,
