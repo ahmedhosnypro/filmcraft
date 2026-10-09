@@ -482,6 +482,16 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         if let Some(l) = path_text(c, &["labels", "label2"]).and_then(label_from) {
             ti.label = l;
         }
+        // `sourcetrack/trackindex` (1-based) picks the source channel of a mono track split off a multichannel file (#463).
+        // Index 1 is also what a stereo clip on a stereo track carries, so it keeps the default (empty) channel mapping.
+        if kind == TrackKind::Audio
+            && let Some(st) = child(c, "sourcetrack")
+            && let Some(idx) = child_i64(st, "trackindex")
+            && idx > 1
+            && let Ok(ch) = u16::try_from(idx - 1)
+        {
+            ti.source_channels = vec![ch];
+        }
         if let Some(mode) = child_text(c, "compositemode") {
             match BLEND_XML.iter().find(|(n, _)| n.eq_ignore_ascii_case(mode)) {
                 Some((_, v)) if *v != 0 => set_param(&mut ti, "opacity", "blend", Param::new(ParamValue::Choice(*v))),
@@ -962,7 +972,7 @@ impl Exp<'_, '_> {
         if kind == TrackKind::Audio {
             self.w.open("sourcetrack", &[]);
             self.w.text("mediatype", "audio");
-            self.w.text("trackindex", 1);
+            self.w.text("trackindex", c.source_channels.first().map_or(1, |ch| u32::from(*ch).saturating_add(1)));
             self.w.close();
         }
         if let Some(blend) = param(c, "opacity", "blend").and_then(|p| p.value.as_f64()).map(|v| v as u32).filter(|v| *v != 0) {

@@ -527,3 +527,43 @@ fn sub_frame_clips_keep_equal_source_and_record_spans() {
         assert_eq!(out_f - in_f, end_f - start_f, "start {start}, in {src}, duration {dur} (tenths of a second): {spans:?}");
     }
 }
+
+/// #463: a stereo file split onto two mono tracks (A1 = channel 1, A2 = channel 2) lost the right channel,
+/// because every audio clip item was written with `sourcetrack/trackindex` 1 and the importer ignored it.
+#[test]
+fn split_mono_tracks_keep_their_source_channel() {
+    let r = FrameRate::FPS_23_976;
+    let mut p = Project::new("P");
+    let a = media(&mut p, "/m/a.wav", false, true, r);
+    let s = sequence(&mut p, "t", r, false);
+    let left = clip(&mut p, s, TrackKind::Audio, 0, a, 0, 24, 0);
+    let right = clip(&mut p, s, TrackKind::Audio, 1, a, 0, 24, 0);
+    for (id, ch) in [(left, 0u16), (right, 1u16)] {
+        let (_, it) = p.sequence_mut(s).unwrap().find_item_mut(id).unwrap();
+        it.source_channels = vec![ch];
+    }
+    let (imp, xml, _) = roundtrip(&p, s, Format::Fcp7Xml, &ExportOptions::default());
+    assert!(xml.contains("<trackindex>2</trackindex>"), "{xml}");
+    let seq = imp.project.sequence(only_seq(&imp)).unwrap();
+    let channels = |t: usize| seq.tracks(TrackKind::Audio)[t].items.iter().map(|i| i.source_channels.clone()).collect::<Vec<_>>();
+    assert_eq!(channels(1), vec![vec![1u16]], "{xml}");
+    let (bytes, _) = export(&imp.project, only_seq(&imp), Format::Fcp7Xml, &ExportOptions::default()).expect("export");
+    assert!(String::from_utf8(bytes).unwrap().contains("<trackindex>2</trackindex>"));
+}
+
+#[test]
+fn audio_sourcetrack_trackindex_2_imports_as_source_channel_1() {
+    let doc = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE xmeml>
+<xmeml version="4"><sequence id="sequence-1"><name>S</name><duration>48</duration>{RATE}
+  <media><audio><track><clipitem id="clipitem-1"><name>take</name>{RATE}<start>0</start><end>48</end><in>0</in><out>48</out>
+    <file id="file-1"><name>take.wav</name><pathurl>file://localhost/media/take.wav</pathurl>{RATE}<duration>48</duration><media><audio><channelcount>2</channelcount></audio></media></file>
+    <sourcetrack><mediatype>audio</mediatype><trackindex>2</trackindex></sourcetrack>
+  </clipitem></track></audio></media>
+</sequence></xmeml>"#
+    );
+    let (imp, _) = import(doc.as_bytes(), Format::Fcp7Xml, None).unwrap();
+    let seq = imp.project.sequence(only_seq(&imp)).unwrap();
+    assert_eq!(seq.tracks(TrackKind::Audio)[0].items[0].source_channels, vec![1u16]);
+}
