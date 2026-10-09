@@ -457,7 +457,14 @@ pub fn export(o: &Opts) -> Vec<Value> {
     let dir = std::env::temp_dir().join(format!("filmcraft-bench-export-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("tmp dir");
     let mut rows = Vec::new();
-    for (format, label, ext) in [("h264", "H.264 + AAC (MP4)", "mp4"), ("prores", "ProRes 422 (MOV)", "mov")].into_iter().filter(|f| o.wants(f.0)) {
+    // Scenes: (id, format, label, extension, effects-heavy). `--only` matches the id exactly here,
+    // so `--only h264` runs the plain scene and `--only h264_fx` only the layered one.
+    let scenes = [
+        ("h264", "h264", "H.264 + AAC (MP4)", "mp4", false),
+        ("h264_fx", "h264", "H.264 + AAC, 3 layers + effects", "mp4", true),
+        ("prores", "prores", "ProRes 422 (MOV)", "mov", false),
+    ];
+    for (id, format, label, ext, fx) in scenes.into_iter().filter(|f| o.only.as_deref().is_none_or(|x| x == f.0)) {
         let mut runs = Vec::new();
         let mut cpu = Vec::new();
         let mut bytes = 0u64;
@@ -471,7 +478,14 @@ pub fn export(o: &Opts) -> Vec<Value> {
         for _ in 0..o.repeat {
             let mut s = Session::default();
             let a = playback::import(&mut s, &path);
-            let seq = playback::build_sequence(&mut s, 1920, 1080, &[(a, 100.0, None, 0.0, 100.0)], &[], secs);
+            let seq = if fx {
+                // PiP layers: (scale %, position, rotation, opacity %); effects per layer, GPU-capable only
+                let layers = [(a, 100.0, None, 0.0, 100.0), (a, 50.0, Some((480.0, -270.0)), 0.0, 100.0), (a, 33.0, Some((-560.0, 300.0)), 0.0, 70.0)];
+                let per_layer: [&[&str]; 3] = [&["proc_amp", "gaussian_blur", "vignette"], &["brightness_contrast"], &["sharpen"]];
+                playback::build_sequence_fx(&mut s, 1920, 1080, &layers, &per_layer, secs)
+            } else {
+                playback::build_sequence(&mut s, 1920, 1080, &[(a, 100.0, None, 0.0, 100.0)], &[], secs)
+            };
             // build_sequence adds video only: add the clip's audio on A1 for the AAC encode
             s.edit("audio", |p, _| {
                 let rate = FrameRate::FPS_23_976;
@@ -504,7 +518,7 @@ pub fn export(o: &Opts) -> Vec<Value> {
             if gpu_timings.frames > 0 {
                 let f = gpu_timings.frames as f64;
                 eprintln!(
-                    "  [GPU timings for {format}] lock_wait: {:.1} ms ({:.2} ms/f), submit: {:.1} ms ({:.2} ms/f), map_wait: {:.1} ms ({:.2} ms/f), convert: {:.1} ms ({:.2} ms/f)",
+                    "  [GPU timings for {id}] lock_wait: {:.1} ms ({:.2} ms/f), submit: {:.1} ms ({:.2} ms/f), map_wait: {:.1} ms ({:.2} ms/f), convert: {:.1} ms ({:.2} ms/f)",
                     lock_wait.as_secs_f64() * 1000.0,
                     lock_wait.as_secs_f64() * 1000.0 / f,
                     gpu_timings.submit.as_secs_f64() * 1000.0,
@@ -523,9 +537,9 @@ pub fn export(o: &Opts) -> Vec<Value> {
             continue;
         }
         let best = runs.iter().cloned().fold(f64::MAX, f64::min);
-        eprintln!("export {format}: {frames} frames in {best:.1} s");
+        eprintln!("export {id}: {frames} frames in {best:.1} s");
         rows.push(json!({
-            "format": label, "frames": frames, "seconds": best, "fps": frames as f64 / best,
+            "scene": id, "format": label, "frames": frames, "seconds": best, "fps": frames as f64 / best,
             "realtime": frames as f64 / best / FrameRate::FPS_23_976.as_f64(), "cpu_ms_per_frame": median(&cpu),
             "mbytes": bytes as f64 / 1e6, "runs_s": runs, "load": load_avg(),
             // pictures encoded by a hardware encoder during this row (zero with --hw off or where there is none)
