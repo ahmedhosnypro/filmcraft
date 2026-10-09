@@ -1,4 +1,12 @@
 //! Extension filters for native file dialogs.
+//!
+//! Every filtered file dialog (import, relink, open file/preset, open/save project) builds
+//! its filter with [`extensions`]. On Linux and the BSDs, rfd's XDG portal, GTK and Zenity
+//! backends turn each extension into a case-sensitive `*.{ext}` glob, so camera files such
+//! as `shot.MP4` or `shot.Mp4` would be hidden. The helper appends one bracket pattern per
+//! extension (`mp4` -> `[mM][pP]4`) after the literal extensions, which stay first so save
+//! dialogs keep their normal default suffix. macOS and Windows dialogs already ignore case
+//! and receive the plain list.
 
 pub fn extensions(exts: &[&str]) -> Vec<String> {
     let extensions: Vec<_> = exts.iter().map(|ext| (*ext).to_owned()).collect();
