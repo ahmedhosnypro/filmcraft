@@ -40,6 +40,7 @@ cargo xtask web --serve 8765                          # the web app on http://12
 |---|---|
 | `FILMCRAFT_CONTROL_PORT` | Same as `--control <port>` |
 | `FILMCRAFT_CPU_COMPOSITE=1` | Disables the GPU compositor |
+| `FILMCRAFT_DEV_DESKTOP_ENTRY=1` | A release run from a source tree installs the user-level desktop entry for the taskbar icon (a debug build always does; packaged runs never) |
 | `FILMCRAFT_DATA_DIR` | Same as `--data-dir <dir>`: auto-save, crash recovery, settings and logs |
 | `RUST_LOG` | Log levels for standard error and the log file (see [Logs](#logs)) |
 
