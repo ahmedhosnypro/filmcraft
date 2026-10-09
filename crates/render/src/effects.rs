@@ -40,6 +40,7 @@ pub(crate) fn f(e: &EffectInstance, id: &str, cx: &FxCtx) -> f32 {
 pub(crate) fn b(e: &EffectInstance, id: &str) -> bool {
     e.param(id).and_then(|p| p.value.as_bool()).unwrap_or(false)
 }
+/// A section switch (missing in older projects = on).
 pub(crate) fn on(e: &EffectInstance, id: &str) -> bool {
     e.param(id).and_then(|p| p.value.as_bool()).unwrap_or(true)
 }
@@ -574,6 +575,8 @@ pub(crate) fn key(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     });
 }
 
+/// The grading signal of the effect's section: HDR White (`white_id`) applies in HDR working
+/// spaces only.
 pub(crate) fn grade_space(e: &EffectInstance, cx: &FxCtx, white_id: &str) -> GradeSpace {
     GradeSpace::new(cx.working, f(e, white_id, cx))
 }
@@ -1335,5 +1338,181 @@ mod curve_tests {
         assert!(s.windows(2).all(|w| w[1] >= w[0] - 1e-6), "monotone");
         let h = hue_lut(&[[0.0, 0.8], [0.5, 0.2]], 64).unwrap();
         assert!((h[0] - h[63]).abs() < 0.05, "periodic");
+    }
+}
+
+#[cfg(test)]
+mod lumetri_cpu_parity_tests {
+    use super::*;
+    use crate::gpufx::FxOp;
+    use filmcraft_project::{EffectInstance, ParamValue, find_effect};
+    use filmcraft_time::Tick;
+
+    fn test_picture(w: usize, h: usize) -> Image {
+        let mut px = Vec::with_capacity(w * h * 4);
+        for y in 0..h {
+            for x in 0..w {
+                let fx = x as f32 / (w.max(2) - 1) as f32;
+                let fy = y as f32 / (h.max(2) - 1) as f32;
+                let c = match x % 11 {
+                    0 => [0.0, 0.0, 0.0],
+                    1 => [1.0, 1.0, 1.0],
+                    2 => [fy, fy, fy],
+                    3 => [1.6 * fy, 1.2 * fy, 0.3],
+                    _ => {
+                        let rgb = filmcraft_color::hsl_to_rgb(fx, 0.25 + 0.75 * ((y % 5) as f32 / 4.0), 0.1 + 0.8 * fy);
+                        rgb.map(filmcraft_color::srgb_to_linear)
+                    }
+                };
+                let a = match y % 7 {
+                    0 => 0.0,
+                    1 | 2 => 0.5 + 0.4 * fx,
+                    3 => 0.25,
+                    _ => 1.0,
+                };
+                px.extend_from_slice(&[c[0] * a, c[1] * a, c[2] * a, a]);
+            }
+        }
+        Image { w, h, px }
+    }
+
+    fn effect(params: &[(&str, ParamValue)]) -> EffectInstance {
+        let mut e = find_effect("lumetri").unwrap().instance();
+        for (k, v) in params {
+            e.params.get_mut(*k).unwrap_or_else(|| panic!("lumetri.{k}")).value = v.clone();
+        }
+        e
+    }
+
+    fn fl(v: f64) -> ParamValue {
+        ParamValue::Float(v)
+    }
+
+    fn col(r: f32, g: f32, b: f32) -> ParamValue {
+        ParamValue::Color([r, g, b, 1.0])
+    }
+
+    #[test]
+    fn lumetri_gpu_op_matches_original_fn_lumetri_cpu() {
+        let cases: &[(&str, Vec<(&str, ParamValue)>)] = &[
+            (
+                "basic",
+                vec![
+                    ("temperature", fl(20.0)),
+                    ("tint", fl(-10.0)),
+                    ("exposure", fl(0.5)),
+                    ("contrast", fl(15.0)),
+                    ("highlights", fl(-20.0)),
+                    ("shadows", fl(25.0)),
+                    ("whites", fl(10.0)),
+                    ("blacks", fl(-15.0)),
+                    ("saturation", fl(110.0)),
+                    ("creative_on", ParamValue::Bool(false)),
+                    ("vignette_on", ParamValue::Bool(false)),
+                ],
+            ),
+            (
+                "creative",
+                vec![
+                    ("basic_on", ParamValue::Bool(false)),
+                    ("creative_sat", fl(120.0)),
+                    ("vibrance", fl(30.0)),
+                    ("faded_film", fl(25.0)),
+                    ("shadow_tint", col(0.4, 0.45, 0.6)),
+                    ("highlight_tint", col(0.6, 0.55, 0.4)),
+                    ("vignette_on", ParamValue::Bool(false)),
+                ],
+            ),
+            (
+                "vignette",
+                vec![
+                    ("basic_on", ParamValue::Bool(false)),
+                    ("creative_on", ParamValue::Bool(false)),
+                    ("vignette_amount", fl(-3.0)),
+                    ("vignette_midpoint", fl(45.0)),
+                    ("vignette_roundness", fl(-30.0)),
+                    ("vignette_feather", fl(60.0)),
+                ],
+            ),
+            (
+                "all_three",
+                vec![
+                    ("temperature", fl(-15.0)),
+                    ("tint", fl(10.0)),
+                    ("exposure", fl(0.3)),
+                    ("contrast", fl(20.0)),
+                    ("highlights", fl(-10.0)),
+                    ("shadows", fl(15.0)),
+                    ("whites", fl(-5.0)),
+                    ("blacks", fl(5.0)),
+                    ("saturation", fl(105.0)),
+                    ("creative_sat", fl(110.0)),
+                    ("vibrance", fl(20.0)),
+                    ("faded_film", fl(15.0)),
+                    ("shadow_tint", col(0.48, 0.5, 0.55)),
+                    ("highlight_tint", col(0.52, 0.5, 0.45)),
+                    ("vignette_amount", fl(2.0)),
+                    ("vignette_midpoint", fl(50.0)),
+                    ("vignette_roundness", fl(20.0)),
+                    ("vignette_feather", fl(50.0)),
+                ],
+            ),
+            (
+                "extreme_pos",
+                vec![
+                    ("exposure", fl(4.0)),
+                    ("contrast", fl(100.0)),
+                    ("temperature", fl(100.0)),
+                    ("tint", fl(100.0)),
+                    ("whites", fl(100.0)),
+                    ("blacks", fl(100.0)),
+                ],
+            ),
+            (
+                "extreme_neg",
+                vec![
+                    ("exposure", fl(-4.0)),
+                    ("contrast", fl(-100.0)),
+                    ("temperature", fl(-100.0)),
+                    ("tint", fl(-100.0)),
+                    ("whites", fl(-100.0)),
+                    ("blacks", fl(-100.0)),
+                ],
+            ),
+        ];
+
+        let (w, h) = (67usize, 41usize);
+        let cx = FxCtx {
+            t: Tick::ZERO,
+            px_scale: 1.0,
+            seconds: 0.0,
+            timecode: "",
+            clip_name: "",
+            project: None,
+            env: None,
+            working: filmcraft_color::WorkingSpace::Rec709,
+        };
+
+        for (name, params) in cases {
+            let e = effect(params);
+            let mut img_orig = test_picture(w, h);
+            let mut img_copy = img_orig.clone();
+
+            lumetri(&mut img_orig, &e, &cx);
+
+            let op = FxOp::eval(&e, &cx, w, h).unwrap_or_else(|| panic!("{name}: eval returned None"));
+            assert!(op.gpu_ok(), "{name}: expected gpu_ok == true");
+            op.apply(&mut img_copy);
+
+            let mut max_diff = 0.0f32;
+            for (i, (&orig, &copy)) in img_orig.px.iter().zip(&img_copy.px).enumerate() {
+                let diff = (orig - copy).abs();
+                if diff > max_diff {
+                    max_diff = diff;
+                }
+                assert!(diff <= 1e-6, "{name}: sample {i} differed: orig={orig}, copy={copy}, diff={diff:.2e} > 1e-6");
+            }
+            eprintln!("{name}: max sample diff vs fn lumetri: {max_diff:.2e}");
+        }
     }
 }
