@@ -369,12 +369,26 @@ mod tests {
                     dirs.push(p);
                 } else if p.extension().is_some_and(|e| e == "rs") {
                     let text = std::fs::read_to_string(&p).unwrap_or_default();
-                    let cut = text.find("#[cfg(test)]\nmod tests").unwrap_or(text.len());
-                    out.push((p.display().to_string(), text[..cut].to_string()));
+                    out.push((p.display().to_string(), production_source(&text)));
                 }
             }
         }
         out
+    }
+
+    fn production_source(text: &str) -> String {
+        let text = text.replace("\r\n", "\n");
+        let cut = text.find("#[cfg(test)]\nmod tests").unwrap_or(text.len());
+        text[..cut].to_string()
+    }
+
+    #[test]
+    fn translation_scan_excludes_test_modules_with_either_line_ending() {
+        let source = "tl!(\"Save\");\n#[cfg(test)]\nmod tests { tl!(\"test-only string\"); }";
+        for text in [source.to_string(), source.replace('\n', "\r\n")] {
+            let production = production_source(&text);
+            assert_eq!(tl_literals(&production), vec!["Save"]);
+        }
     }
 
     /// The (unescaped) string literals passed to `tl!` and `tlf!` in a source file.
