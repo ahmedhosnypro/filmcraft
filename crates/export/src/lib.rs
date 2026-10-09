@@ -273,7 +273,7 @@ pub struct ExportSettings {
     #[serde(default)]
     pub hardware_encoding: HardwareEncoding,
     /// Composite the exported frames on the GPU instead of the CPU reference renderer (Export ▸
-    /// GPU rendering: Auto / Off). Off = today's CPU behaviour exactly.
+    /// GPU rendering: Auto / Off, Auto by default). Off = the CPU reference renderer exactly.
     #[serde(default)]
     pub gpu_rendering: GpuRendering,
     /// VBR maximum bitrate (None = 1.5 × target).
@@ -458,7 +458,7 @@ impl Default for ExportSettings {
             h264_level: None,
             bitrate_mode: BitrateMode::default(),
             hardware_encoding: HardwareEncoding::default(),
-            gpu_rendering: GpuRendering::Off,
+            gpu_rendering: GpuRendering::Auto,
             max_bitrate_kbps: None,
             adaptive_bitrate: None,
             keyframe_distance: None,
