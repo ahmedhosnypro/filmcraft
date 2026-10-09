@@ -26,3 +26,22 @@ sync_github_name = false
 real_name = "Ahmed Hosny"
 display_name = "Ahmed Hosny"
 sync_github_name = false
+
+[people.sanyamsingh001]
+display_name = "sanyamsingh001"
+sync_github_name = false
+
+[people.switch87]
+real_name = "Gert Pellin"
+display_name = "Gert Pellin"
+sync_github_name = false
+
+[people.swillunderscore]
+display_name = "Swill Software"
+
+
+[people.IppSec]
+sync_github_name = true
+
+[people.ItzBloxy]
+display_name = "Bloxy"
