@@ -36,8 +36,19 @@ fn off_uses_the_software_decoder() {
         assert_eq!(d.name(), "FilmCraft HEVC");
         return;
     }
-    let (backend, hw_name) = if cfg!(target_os = "macos") { ("VideoToolbox", "VideoToolbox HEVC") } else { ("Media Foundation", "Media Foundation HEVC") };
-    assert_eq!(d.name(), hw_name);
+    // The VA-API decoder name carries the driver after the codec ("VA-API HEVC (Intel iHD …)").
+    let (backend, hw_name) = if cfg!(target_os = "macos") {
+        ("VideoToolbox", "VideoToolbox HEVC")
+    } else if cfg!(target_os = "linux") {
+        ("VA-API", "VA-API HEVC")
+    } else {
+        ("Media Foundation", "Media Foundation HEVC")
+    };
+    if cfg!(target_os = "linux") {
+        assert!(d.name().starts_with(hw_name), "decoder name: {}", d.name());
+    } else {
+        assert_eq!(d.name(), hw_name);
+    }
     assert_eq!(filmcraft_codecs::hw::hw_backend(), Some(backend), "perf.stats reports the backend");
     assert!(filmcraft_platform::registered(), "register() put the factory in the registry");
     let h1 = filmcraft_codecs::hw::hw_stats();
