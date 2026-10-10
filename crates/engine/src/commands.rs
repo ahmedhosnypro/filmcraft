@@ -357,12 +357,17 @@ pub fn with_links(s: &Session, clips: &[ClipId]) -> Vec<ClipId> {
     out
 }
 
-pub(crate) fn default_seq_settings_for(info: &filmcraft_media::MediaInfo) -> SequenceSettings {
+/// Sequence settings matching a media clip (New Sequence From Clip, New Sequence from an item):
+/// its frame size, rate and pixel aspect ratio (Interpret Footage's, else the file's), so a
+/// 1440 x 1080 clip with 4:3 pixels makes a 1440 x 1080 sequence that displays 16:9.
+pub(crate) fn default_seq_settings_for(media: &MediaClip) -> SequenceSettings {
+    let info = &media.info;
     let mut st = SequenceSettings::default();
     if let Some(v) = &info.video {
         st.width = v.width;
         st.height = v.height;
         st.frame_rate = v.frame_rate;
+        st.par = media.pixel_aspect();
         st.preset = format!("{}x{} {}", v.width, v.height, v.frame_rate.label());
     }
     if let Some(a) = info.audio() {
@@ -455,8 +460,15 @@ fn new_generator(s: &mut Session, g: Generator, name: &str, label: Label, p: &Va
     let name = str_p(p, "name").unwrap_or(name).to_string();
     let src = GeneratorSource::new(g, w, h, st.frame_rate, Tick::from_seconds_f64(secs));
     let pool = s.media.clone();
+    let par = filmcraft_project::sane_par(st.par);
     let id = s.edit(&format!("New {name}"), |pr, st| {
         let id = crate::demo::add_generator(pr, &pool, src, &name, label, None);
+        // made for the sequence: its pixels have the sequence's aspect, as in Premiere
+        if let Some(ItemKind::Media(m)) = pr.item_mut(id).map(|i| &mut i.kind)
+            && let Some(v) = m.info.video.as_mut()
+        {
+            v.par = par;
+        }
         st.project_selection = vec![id];
         Ok(id)
     })?;
@@ -585,6 +597,8 @@ pub(crate) fn place_item(
         _ => None,
     }
     .unwrap_or((1920, 1080));
+    // `None`: drawn in the pixels of the sequence it is placed in
+    let src_par = s.project.source_par(item);
     let seq_id = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
     let media = s.media.clone();
     let scaling = s.prefs.media.default_media_scaling.clone();
@@ -593,6 +607,7 @@ pub(crate) fn place_item(
         let seq = p.sequence(seq_id).ok_or(EngineError::NoSequence)?;
         let rate = seq.settings.frame_rate;
         let frame = (seq.settings.width, seq.settings.height);
+        let seq_par = seq.settings.par;
         let mut placements = Vec::new();
         let link = if has_v && has_a { Some(p.alloc_id()) } else { None };
         if let Some(vdest) = vdest.filter(|_| has_v) {
@@ -601,8 +616,10 @@ pub(crate) fn place_item(
             for e in &mut v.effects {
                 resolve_auto_points(e, frame, src_size);
             }
-            if is_media && src_size != frame {
-                crate::settings::apply_media_scaling(&mut v, &scaling, frame, src_size);
+            // the picture's size at its display aspect, in sequence pixels
+            let shown = filmcraft_project::conformed_size(src_size, src_par.unwrap_or(seq_par), seq_par);
+            if is_media && shown != (f64::from(frame.0), f64::from(frame.1)) {
+                crate::settings::apply_media_scaling(&mut v, &scaling, frame, shown);
             }
             placements.push((vdest, v));
         }
@@ -753,7 +770,7 @@ fn build() -> Vec<CommandSpec> {
             |s, p| {
                 let mut st = SequenceSettings::default();
                 if let Some(from) = item_p(p, "fromItem").and_then(|i| s.project.item(i)).and_then(|i| i.as_media()) {
-                    st = default_seq_settings_for(&from.info);
+                    st = default_seq_settings_for(from);
                 }
                 if let Some(w) = checked_u32_p(p, "width", "file.newSequence")? {
                     st.width = w;
