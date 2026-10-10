@@ -287,7 +287,8 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
     }
     match id {
         "playback.slowForward" | "playback.slowReverse" if targets_source(app, &params) => {
-            return Err("Source playback currently supports normal forward speed".into());
+            app.shuttle_source(if id == "playback.slowForward" { 0.25 } else { -0.25 })?;
+            return Ok(json!({"playing": app.source_playback.clock.playing, "speed": app.source_playback.clock.speed}));
         }
         "playback.slowForward" | "playback.slowReverse" => {
             app.play(if id == "playback.slowForward" { 0.25 } else { -0.25 });
@@ -315,12 +316,12 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
             app.toggle_play(1.0);
             return Ok(json!({"playing": app.playback.playing}));
         }
-        "playback.forward" if targets_source(app, &params) => {
-            app.play_source()?;
-            return Ok(json!({"playing": app.source_playback.clock.playing, "speed": 1.0}));
-        }
-        "playback.reverse" if targets_source(app, &params) => {
-            return Err("Source playback currently supports normal forward speed; use Play/Space or frame stepping".into());
+        // L / J: pressing again in the same direction doubles the speed, up to 8×
+        "playback.forward" | "playback.reverse" if targets_source(app, &params) => {
+            let (clock, dir) = (&app.source_playback.clock, if id == "playback.forward" { 1.0 } else { -1.0 });
+            let speed = if clock.playing && clock.speed * dir > 0.0 { (clock.speed * 2.0).clamp(-8.0, 8.0) } else { dir };
+            app.shuttle_source(speed)?;
+            return Ok(json!({"playing": app.source_playback.clock.playing, "speed": app.source_playback.clock.speed}));
         }
         "playhead.stepBack" | "playhead.stepForward" | "playhead.stepBack5" | "playhead.stepForward5" if targets_source(app, &params) => {
             app.stop_source();
