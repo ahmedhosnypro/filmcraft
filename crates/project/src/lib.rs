@@ -1232,9 +1232,9 @@ impl SequenceView {
     }
 }
 
-/// What was open when a project was saved: the Timeline's sequence tabs in order, the active one
-/// and how each sequence was shown. Stored beside the project in its file, not in it: it is not
-/// part of the edit and never an undo step.
+/// What was open when a project was saved: the Timeline's sequence tabs in order, the active one,
+/// how each sequence was shown and where its playhead was. Stored beside the project in its file,
+/// not in it: it is not part of the edit and never an undo step.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ProjectView {
     #[serde(default)]
@@ -1243,6 +1243,17 @@ pub struct ProjectView {
     pub active_sequence: Option<ItemId>,
     #[serde(default)]
     pub sequences: BTreeMap<ItemId, SequenceView>,
+    /// Each sequence's playhead, so a sequence reopens where it was left. Files
+    /// written before it existed have none, and every playhead starts at zero as it did then.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub playheads: BTreeMap<ItemId, Tick>,
+}
+
+impl ProjectView {
+    /// The latest playhead a project file may ask for: ten million seconds (about 115 days), the
+    /// same bound as a sequence view's scroll position. Playheads are read from project files, so
+    /// nothing in them is trusted.
+    pub const MAX_PLAYHEAD: Tick = Tick(10_000_000 * TICKS_PER_SECOND);
 }
 
 /// A LUT imported into the project (`lut.import`). Lumetri refers to it as `lib:<id>`.

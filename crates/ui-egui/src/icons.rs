@@ -114,6 +114,8 @@ pub enum Icon {
     Network,
     /// Media Browser: recent directories (a clock face).
     Clock,
+    /// Colour parameters: pick a colour from the Program monitor (a pipette).
+    Eyedropper,
 }
 
 pub struct Pen16<'a> {
@@ -725,6 +727,13 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             pen.circle(8.0, 8.0, 6.0);
             pen.line(&[(8.0, 4.5), (8.0, 8.0), (10.5, 9.5)]);
         }
+        Eyedropper => {
+            // a pipette: bulb at the top right, glass tube running to a tip at the bottom left
+            pen.closed(&[(10.0, 4.5), (11.5, 3.0), (13.0, 3.0), (13.0, 4.5), (11.5, 6.0)]);
+            pen.line(&[(8.2, 6.2), (10.8, 8.8)]);
+            pen.line(&[(9.5, 7.5), (3.5, 12.5)]);
+            pen.line(&[(3.5, 12.5), (2.5, 13.5)]);
+        }
     }
 }
 
@@ -853,6 +862,7 @@ mod tests {
         Drive,
         Network,
         Clock,
+        Eyedropper,
     ];
 
     /// Paint `icon` at `ppp` device pixels per point into a rect of `size` points whose corner is
