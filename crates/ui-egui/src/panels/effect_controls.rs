@@ -72,6 +72,11 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let clips = selected_clips(app);
     let Some((clip, it, _)) = clips.first().cloned() else {
+        // a transition clicked in the Timeline (#430)
+        if let Some(id) = crate::panels::transition_controls::selected(app) {
+            crate::panels::transition_controls::effect_controls(app, ui, rect, id);
+            return;
+        }
         crate::dock::placeholder(ui, rect, &t, tl!("(no clip selected)"));
         return;
     };

@@ -3496,3 +3496,5 @@
 	Gradient Angle	グラデーションの角度
 	Linear Gradient	線形グラデーション
 	Solid	べた塗り
+	Clear Transition	トランジションを消去
+	Set Transition Duration	トランジションのデュレーションを設定

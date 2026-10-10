@@ -130,6 +130,16 @@ pub enum Drag {
         /// As in [`Drag::Trim`].
         from: Tick,
     },
+    /// A transition dragged by an end (`edge`: its duration) or its middle (slides it over the
+    /// cut); `start` / `duration` are where it is shown now, committed on release (#224).
+    Transition {
+        id: filmcraft_project::TransitionId,
+        edge: Option<filmcraft_edit::Edge>,
+        /// As in [`Drag::Trim`].
+        from: Tick,
+        start: Tick,
+        duration: Tick,
+    },
     Pan {
         last: Pos2,
     },
@@ -424,13 +434,22 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         }
         // selected edit points (trim mode): red brackets for ripple, yellow for roll / regular trim
         super::trim_monitor::paint_edit_points(app, &p, &seq, tr, r, &layout);
-        // transitions
+        // transitions (one being dragged where the drag puts it; the selected ones outlined)
         for trn in &tr.transitions {
-            let x0 = layout.x_of(trn.start);
-            let x1 = layout.x_of(trn.end());
+            let (start, end) = match &app.tl.drag {
+                Some(Drag::Transition { id, start, duration, .. }) if *id == trn.id => (*start, *start + *duration),
+                _ => (trn.start, trn.end()),
+            };
+            let x0 = layout.x_of(start);
+            let x1 = layout.x_of(end);
             let tr_rect = Rect::from_min_max(pos2(x0, r.rect.min.y + 17.0), pos2(x1, r.rect.max.y - 1.0));
-            draw_transition(&p, tr_rect, trn, &t);
+            let selected = app.session.state.transition_selection.contains(&trn.id);
+            draw_transition(&p, tr_rect, trn, selected, &t);
             app.auto.add(&format!("timeline.transition.{}", trn.id.0), tr_rect, &trn.effect.effect);
+            // its ends, for dragging the duration (the same zones as the hit test)
+            let zone = super::timeline_hit::EDGE_PX.min(tr_rect.width() / 3.0);
+            app.auto.add(&format!("timeline.transition.{}.in", trn.id.0), Rect::from_min_max(tr_rect.min, pos2(x0 + zone, tr_rect.max.y)), "start");
+            app.auto.add(&format!("timeline.transition.{}.out", trn.id.0), Rect::from_min_max(pos2(x1 - zone, tr_rect.min.y), tr_rect.max), "end");
         }
     }
 
@@ -902,7 +921,7 @@ fn paint_hatch(p: &egui::Painter, r: Rect) {
     }
 }
 
-fn draw_transition(p: &egui::Painter, r: Rect, trn: &filmcraft_project::Transition, _t: &Tokens) {
+fn draw_transition(p: &egui::Painter, r: Rect, trn: &filmcraft_project::Transition, selected: bool, t: &Tokens) {
     let cp = p.with_clip_rect(r.intersect(p.clip_rect()));
     cp.rect_filled(r, 0.0, Color32::from_black_alpha(90));
     paint_hatch(p, r);
@@ -924,6 +943,9 @@ fn draw_transition(p: &egui::Painter, r: Rect, trn: &filmcraft_project::Transiti
         cp.add(egui::Shape::line(b, Stroke::new(1.0, Color32::WHITE)));
     }
     cp.rect_stroke(r, 0.0, Stroke::new(1.0, Color32::from_rgb(0xeb, 0xeb, 0xeb)), StrokeKind::Inside);
+    if selected {
+        cp.rect_stroke(r, 0.0, Stroke::new(2.0, t.accent), StrokeKind::Inside);
+    }
     if r.width() > 34.0 && !audio {
         let name = trn.effect.def().map(|d| d.name).unwrap_or(&trn.effect.effect);
         let tr = Rect::from_min_size(r.min + vec2(2.0, 2.0), vec2((r.width() - 4.0).min(80.0), 13.0));
@@ -1475,7 +1497,7 @@ pub fn hit_json(app: &FilmcraftApp, pos: Pos2, mods: egui::Modifiers) -> Value {
         Hit::Clip { track, clip, edge } => {
             json!({"hit": "clip", "track": track.0, "clip": clip.0, "edge": edge.map(|e| format!("{e:?}")), "kind": kind, "time": t.0})
         }
-        Hit::Transition { track, id } => json!({"hit": "transition", "track": track.0, "transition": id.0}),
+        Hit::Transition { track, id, edge } => json!({"hit": "transition", "track": track.0, "transition": id.0, "edge": edge.map(|e| format!("{e:?}"))}),
         Hit::Empty { track } => json!({"hit": "empty", "track": track.0, "time": t.0}),
         Hit::None => json!({"hit": "none"}),
     }
@@ -1826,6 +1848,8 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
         let g = grab_at(seq, layout, p, tool, mods, roll_ripple);
         let cur = match (tool, g) {
             (_, Grab::Edge { .. }) => CursorIcon::ResizeColumn,
+            (Tool::Selection, Grab::Other(Hit::Transition { edge: Some(_), .. })) => CursorIcon::ResizeColumn,
+            (Tool::Selection, Grab::Other(Hit::Transition { edge: None, .. })) => CursorIcon::Grab,
             (_, Grab::Volume { .. }) if tool == Tool::Pen || mods.command => CursorIcon::Crosshair,
             (_, Grab::Volume { .. }) => CursorIcon::ResizeVertical,
             (Tool::Razor, Grab::Other(Hit::Clip { .. })) => CursorIcon::Crosshair,
@@ -1943,6 +1967,7 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                 } else if !sel.contains(&clip) {
                     if mods.alt {
                         app.session.state.selection = vec![clip];
+                        app.session.state.transition_selection.clear();
                     } else {
                         let _ = app.session.execute("timeline.select", json!({"clips": [clip.0]}));
                     }
@@ -1954,6 +1979,22 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                     None
                 }
             }
+            // click a transition to select it (Shift adds / removes); drag an end to change its
+            // duration or its middle to slide it over the cut (#430, #224)
+            (Tool::Selection, Grab::Other(Hit::Transition { id, edge, .. })) => {
+                // a drag of a selected transition (Shift too) moves it rather than toggling it out first
+                if !(app.session.state.transition_selection.contains(&id) && resp.drag_started()) {
+                    let r = app.session.execute("timeline.select", json!({"transitions": [id.0], "toggle": mods.shift}));
+                    if let Err(e) = r {
+                        app.ui.status = e.to_string();
+                    }
+                }
+                let span = seq.all_tracks().find_map(|tr| tr.transitions.iter().find(|x| x.id == id)).map(|x| (x.start, x.duration));
+                match span {
+                    Some((start, duration)) if resp.drag_started() => Some(Drag::Transition { id, edge, from: t, start, duration }),
+                    _ => None,
+                }
+            }
             (_, Grab::Other(Hit::Transition { .. })) => None,
             (_, Grab::Other(Hit::Empty { .. })) => {
                 if resp.drag_started() {
@@ -1961,6 +2002,7 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                 } else {
                     app.session.state.selection.clear();
                     app.session.state.edit_points.clear();
+                    app.session.state.transition_selection.clear();
                     None
                 }
             }
@@ -2048,6 +2090,14 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                 let origin = ctx.input(|i| i.pointer.press_origin()).map(|o| layout.tick_at(o.x)).unwrap_or(t_here);
                 Some(Drag::Slide { clip, delta: rate.snap_nearest(t_here - origin) })
             }
+            Drag::Transition { id, edge, from, start, duration } => {
+                let delta = rate.snap_nearest(t_here - from);
+                let span = seq.all_tracks().find_map(|tr| {
+                    tr.transitions.iter().find(|x| x.id == id).and_then(|x| filmcraft_edit::transitions::drag_span(tr, x, edge, delta, rate.frame_duration()))
+                });
+                let (start, duration) = span.unwrap_or((start, duration));
+                Some(Drag::Transition { id, edge, from, start, duration })
+            }
             Drag::Volume(v) => Some(Drag::Volume(super::timeline_volume::drag(app, ui, seq, layout, v, p.y))),
             Drag::Marquee { start } => {
                 let r = Rect::from_two_pos(start, p);
@@ -2095,6 +2145,10 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
             Drag::Roll { left, right, delta, .. } if delta != Tick::ZERO => Some(app.session.execute("timeline.roll", json!({"left": left.0, "right": right.0, "delta": delta.0}))),
             Drag::Slip { clip, delta } if delta != Tick::ZERO => Some(app.session.execute("timeline.slip", json!({"clip": clip.0, "delta": delta.0}))),
             Drag::Slide { clip, delta } if delta != Tick::ZERO => Some(app.session.execute("timeline.slide", json!({"clip": clip.0, "delta": delta.0}))),
+            Drag::Transition { id, start, duration, .. } => {
+                let moved = seq.all_tracks().find_map(|tr| tr.transitions.iter().find(|x| x.id == id)).is_some_and(|x| (x.start, x.duration) != (start, duration));
+                moved.then(|| app.session.execute("sequence.setTransition", json!({"transition": id.0, "start": start.0, "duration": duration.0})))
+            }
             Drag::Marquee { start } => {
                 if let Some(end) = resp.interact_pointer_pos() {
                     let r = Rect::from_two_pos(start, end);
@@ -2116,6 +2170,15 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
         if let Some(Err(e)) = r {
             app.ui.status = e.to_string();
         }
+    }
+
+    // ---- double-click a transition: Set Transition Duration (Premiere)
+    if resp.double_clicked()
+        && tool == Tool::Selection
+        && let Some(p) = resp.interact_pointer_pos()
+        && let Hit::Transition { id, .. } = hit(seq, layout, p)
+    {
+        crate::panels::transition_controls::open_duration(app, id);
     }
 
     // ---- double-click a nested sequence clip: open it in its own Timeline tab

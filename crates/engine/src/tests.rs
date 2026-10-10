@@ -817,6 +817,114 @@ fn dragging_an_effect_parameter_is_one_undo_step() {
     assert_eq!(opacity(&s), start, "and then the whole first one");
 }
 
+/// The demo's first video transition between two clips: (id, start, duration, cut).
+fn demo_crossing(s: &Session) -> (u64, Tick, Tick, Tick) {
+    let q = s.active_sequence().unwrap();
+    q.video_tracks
+        .iter()
+        .find_map(|t| {
+            t.transitions.iter().find(|x| x.from.is_some() && x.to.is_some()).map(|x| (x.id.0, x.start, x.duration, t.item(x.to.unwrap()).unwrap().start))
+        })
+        .expect("the demo has a transition between two clips")
+}
+
+fn transition_ids(s: &Session) -> Vec<u64> {
+    s.active_sequence().unwrap().all_tracks().flat_map(|t| t.transitions.iter().map(|x| x.id.0)).collect()
+}
+
+/// #430: a transition can be selected (it replaces the clip selection and back), Delete removes
+/// it and leaves its clips, undo brings it back; Ripple Delete is not for a transition alone.
+#[test]
+fn transitions_select_and_delete() {
+    let mut s = demo();
+    let (tid, ..) = demo_crossing(&s);
+    let clips = s.active_sequence().unwrap().all_tracks().map(|t| t.items.len()).sum::<usize>();
+    let some_clip = s.active_sequence().unwrap().video_tracks[0].items[0].id.0;
+    s.execute("timeline.select", json!({"clips": [some_clip]})).unwrap();
+    let r = s.execute("timeline.select", json!({"transitions": [tid]})).unwrap();
+    assert_eq!(r["transitionSelection"], json!([tid]));
+    assert!(s.state.selection.is_empty(), "selecting a transition replaces the clip selection");
+    assert!(s.execute("timeline.select", json!({"transitions": [987_654]})).is_err(), "unknown ids are refused");
+    assert!(s.execute("edit.rippleDelete", json!({})).is_err(), "Ripple Delete needs clips");
+    let before = (*s.project).clone();
+    s.execute("edit.clear", json!({})).unwrap();
+    assert!(!transition_ids(&s).contains(&tid), "Delete removes the selected transition");
+    assert_eq!(s.active_sequence().unwrap().all_tracks().map(|t| t.items.len()).sum::<usize>(), clips, "and leaves the clips");
+    assert!(s.state.transition_selection.is_empty());
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(*s.project, before, "one undo step");
+    // selecting clips clears a transition selection
+    s.execute("timeline.select", json!({"transitions": [tid]})).unwrap();
+    s.execute("timeline.select", json!({"clips": [some_clip]})).unwrap();
+    assert!(s.state.transition_selection.is_empty());
+    // by id, without a selection
+    s.execute("sequence.removeTransition", json!({"transitions": [tid]})).unwrap();
+    assert!(!transition_ids(&s).contains(&tid));
+    assert!(s.execute("sequence.removeTransition", json!({"transitions": [tid]})).is_err(), "nothing left to remove");
+    assert!(s.execute("sequence.removeTransition", json!({})).is_err(), "nothing given or selected");
+}
+
+/// #224 / Effect Controls: Duration follows the alignment, Alignment re-aligns on the cut, Start
+/// moves it (Custom Start), all within the clips it joins; a drag is one undo step.
+#[test]
+fn transition_duration_alignment_and_position() {
+    let mut s = demo();
+    let rate = s.sequence_rate();
+    let f = |n: i64| rate.tick_of(n);
+    let (tid, _, _, cut) = demo_crossing(&s);
+    let set = |s: &mut Session, p: Value| {
+        let mut p = p;
+        p["transition"] = json!(tid);
+        s.execute("sequence.setTransition", p)
+    };
+    let r = set(&mut s, json!({"align": "start"})).unwrap();
+    assert_eq!((r["start"].as_i64(), r["align"].as_str()), (Some(cut.0), Some("start")));
+    // Start at Cut: only the end moves
+    let r = set(&mut s, json!({"frames": 10})).unwrap();
+    assert_eq!((r["start"].as_i64(), r["duration"].as_i64()), (Some(cut.0), Some(f(10).0)));
+    // End at Cut: only the beginning moves
+    let r = set(&mut s, json!({"align": "end", "frames": 8})).unwrap();
+    assert_eq!((r["start"].as_i64(), r["duration"].as_i64(), r["align"].as_str()), (Some((cut - f(8)).0), Some(f(8).0), Some("end")));
+    // Center at Cut: both ends
+    let r = set(&mut s, json!({"align": "center", "frames": 12})).unwrap();
+    assert_eq!((r["start"].as_i64(), r["align"].as_str()), (Some((cut - f(6)).0), Some("center")));
+    // dragging it over the cut: Custom Start; then a new duration keeps its middle
+    let r = set(&mut s, json!({"start": (cut - f(3)).0})).unwrap();
+    assert_eq!(r["align"], json!("custom"));
+    let r = set(&mut s, json!({"frames": 6})).unwrap();
+    assert_eq!((r["start"].as_i64(), r["duration"].as_i64()), (Some(cut.0), Some(f(6).0)), "centre at cut + 3 frames, 6 frames long");
+    // dragging one edge: start and duration together
+    let r = set(&mut s, json!({"start": (cut - f(4)).0, "duration": f(10).0})).unwrap();
+    assert_eq!((r["start"].as_i64(), r["duration"].as_i64()), (Some((cut - f(4)).0), Some(f(10).0)));
+    // refused, and nothing changes
+    let before = (*s.project).clone();
+    let history = s.history.undo.len();
+    for p in [
+        json!({"frames": 0}),
+        json!({"frames": 100_000_000}),
+        json!({"duration": -5}),
+        json!({"duration": i64::MAX}),
+        json!({"frames": 10, "duration": f(10).0}),
+        json!({"align": "middle"}),
+        json!({"align": "start", "start": cut.0}),
+        json!({"start": i64::MIN}),
+        json!({"start": (cut + f(1)).0, "duration": f(1).0}),
+    ] {
+        assert!(set(&mut s, p.clone()).is_err(), "{p}");
+        assert_eq!(*s.project, before, "{p}");
+        assert_eq!(s.history.undo.len(), history, "{p}");
+    }
+    assert!(s.execute("sequence.setTransition", json!({"transition": 987_654, "frames": 5})).is_err());
+    // a drag (merge) is one undo step
+    let history = s.history.undo.len();
+    for (i, n) in [11, 12, 13, 14].into_iter().enumerate() {
+        set(&mut s, json!({"frames": n, "merge": true, "begin": i == 0})).unwrap();
+    }
+    assert_eq!(s.history.undo.len(), history + 1);
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(*s.project, before);
+}
+
 /// #484: Enable flips each selected clip on its own, as in Premiere. With one enabled and one
 /// disabled clip selected it swaps them, instead of first making both the same.
 #[test]
