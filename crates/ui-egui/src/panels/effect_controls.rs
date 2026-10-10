@@ -9,6 +9,7 @@ use serde_json::{Value, json};
 
 use crate::FilmcraftApp;
 use crate::icons::{self, Icon};
+use crate::state::KeyframeRef;
 use crate::theme::Tokens;
 
 const ROW_H: f32 = 22.0;
@@ -41,6 +42,16 @@ fn graph_drag_offset(ui: &egui::Ui, response: &egui::Response, previous: egui::V
     }
 }
 
+/// Whether `k` names a keyframe of the clip `it` (its effect, parameter and media time).
+fn keyframe_exists(it: &TrackItem, k: &KeyframeRef) -> bool {
+    let Some(e) = it.effects.get(k.effect) else { return false };
+    let param = match k.mask {
+        Some(m) => e.masks.get(m).and_then(|m| m.param(&k.param)),
+        None => e.params.get(&k.param),
+    };
+    param.is_some_and(|p| p.keyframes.iter().any(|kf| kf.time == k.time))
+}
+
 fn selected_clip(app: &FilmcraftApp) -> Option<(ClipId, TrackItem, TrackKind)> {
     selected_clips(app).into_iter().next()
 }
@@ -71,6 +82,8 @@ fn selected_clips(app: &FilmcraftApp) -> Vec<(ClipId, TrackItem, TrackKind)> {
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let clips = selected_clips(app);
+    // keep only selected keyframes that still exist on a clip shown here
+    app.ui.keyframe_selection.retain(|k| clips.iter().any(|(c, it, _)| c.0 == k.clip && keyframe_exists(it, k)));
     let Some((clip, it, _)) = clips.first().cloned() else {
         // a transition clicked in the Timeline (#430)
         if let Some(id) = crate::panels::transition_controls::selected(app) {
@@ -561,7 +574,13 @@ pub(crate) fn param_row(
             let kr = Rect::from_center_size(pos2(kx, y), vec2(11.0, 11.0));
             let resp = ui.interact(kr.expand(2.0), id, Sense::click_and_drag());
             app.auto.add(&format!("effectControls.{}.{}.keyframe.{}", e.effect, pkey, k.time.0), kr, "keyframe");
-            let sel = k.time == mt || resp.dragged();
+            // highlighted when selected (not merely under the playhead: that lit up every
+            // parameter's keyframe at the same time, #412)
+            let is_this = |s: &KeyframeRef| s.clip == clip.0 && s.effect == idx && s.mask == mask && s.param == pd.id && s.time == k.time;
+            if resp.clicked() || resp.drag_started() {
+                app.ui.keyframe_selection = vec![KeyframeRef { clip: clip.0, effect: idx, param: pd.id.to_string(), mask, time: k.time }];
+            }
+            let sel = resp.dragged() || app.ui.keyframe_selection.iter().any(is_this);
             let col = if sel { t.hot_text } else { Color32::from_rgb(0xb0, 0xb0, 0xb0) };
             match k.interp {
                 filmcraft_project::Interpolation::Hold => {
@@ -583,6 +602,10 @@ pub(crate) fn param_row(
                     rate.snap_nearest(it.start + Tick(((f + off / lane.width()) as f64 * dur) as i64)).clamp(it.start, it.end() - rate.frame_duration());
                 let new_media = it.source_in + Tick(((new_tl - it.start).0 as f64 * it.speed.abs()) as i64);
                 if new_media != k.time {
+                    // the moved keyframe stays selected
+                    for s in app.ui.keyframe_selection.iter_mut().filter(|s| is_this(s)) {
+                        s.time = new_media;
+                    }
                     actions.push((
                         "effects.moveKeyframe".into(),
                         with_mask(json!({"clip": clip.0, "effect": eff_json, "param": pd.id, "mediaTime": k.time.0, "to": new_media.0})),
