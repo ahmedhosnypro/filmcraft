@@ -609,7 +609,10 @@ fn footer(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, v: &View, action
                     let parent = (v.bin != app.session.project.root.id).then_some(v.bin.0);
                     actions.push(("file.newBin".into(), json!({"name": "New Bin", "parent": parent})));
                 }
-                "project.delete" if app.session.state.project_selection.is_empty() => app.ui.status = tl!("Select items to clear").into(),
+                "project.delete" => match crate::panels::project_views::clear_params(&app.session.state.project_selection, app.ui.project_panel.selected_bin) {
+                    Some(p) => actions.push((id.into(), p)),
+                    None => app.ui.status = tl!("Select items to clear").into(),
+                },
                 _ => actions.push((id.into(), json!({}))),
             }
         }
@@ -673,6 +676,7 @@ pub fn panel_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui) -> bool {
     let inst = shown_inst(app);
     let v = view_of(app, inst);
     let has_sel = !app.session.state.project_selection.is_empty() || app.ui.project_panel.selected_bin.is_some();
+    let clear = crate::panels::project_views::clear_params(&app.session.state.project_selection, app.ui.project_panel.selected_bin);
     let has_project_path = app.session.path.is_some();
     let sc = |id: &str| app.session.shortcuts.primary(id);
     let (s_close, s_save, s_bin, s_find) = (sc("file.closeProject"), sc("file.save"), sc("file.newBin"), sc("edit.find"));
@@ -712,8 +716,8 @@ pub fn panel_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui) -> bool {
         if item(ui, "rename", tl!("Rename"), has_sel, None) {
             actions.push(("projectPanel.rename".into(), json!({})));
         }
-        if item(ui, "delete", tl!("Delete"), !app.session.state.project_selection.is_empty(), Some("Backspace")) {
-            actions.push(("project.delete".into(), json!({})));
+        if item(ui, "delete", tl!("Delete"), clear.is_some(), Some("Backspace")) {
+            actions.push(("project.delete".into(), clear.unwrap_or_default()));
         }
         ui.separator();
         if item(ui, "automateToSequence", tl!("Automate to Sequence…"), !app.session.state.project_selection.is_empty(), None) {

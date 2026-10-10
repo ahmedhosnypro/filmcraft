@@ -1258,8 +1258,16 @@ impl FilmcraftApp {
             if self.ui.focused == PanelKind::Project && matches!(id.as_str(), "edit.selectAll" | "edit.deselectAll") {
                 id = id.replacen("edit.", "project.", 1);
             }
+            // Clear in the Project panel removes the selected bin when no item is selected (#587).
+            let clear = if self.ui.focused == PanelKind::Project && id == "project.delete" {
+                crate::panels::project_views::clear_params(&self.session.state.project_selection, self.ui.project_panel.selected_bin)
+            } else {
+                None
+            };
             // Mark In/Out in the Source monitor when it has focus.
-            let params = if self.ui.focused == PanelKind::Source
+            let params = if let Some(p) = clear {
+                p
+            } else if self.ui.focused == PanelKind::Source
                 && (matches!(id.as_str(), "markers.markIn" | "markers.markOut" | "markers.clearInOut")
                     || id.starts_with("markers.markSplit")
                     || id.starts_with("markers.goToSplit"))

@@ -314,6 +314,20 @@ fn bin_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, bin: u64, actio
         actions.push(("file.newBin".into(), json!({"name": "New Bin", "parent": bin})));
         ui.close();
     }
+    ui.separator();
+    if ui.button(tl!("Clear")).clicked() {
+        actions.push(("project.delete".into(), json!({"items": [bin]})));
+        ui.close();
+    }
+}
+
+/// Parameters for `project.delete`: the selected items, else the selected bin by id (the engine
+/// deletes a named bin with everything in it). `None` when nothing is selected.
+pub fn clear_params(selection: &[filmcraft_project::ItemId], selected_bin: Option<u64>) -> Option<serde_json::Value> {
+    if !selection.is_empty() {
+        return Some(json!({}));
+    }
+    selected_bin.map(|b| json!({"items": [b]}))
 }
 
 /// Drop project items dragged onto a bin: move them (the selection when the dragged item is in it).
@@ -1032,4 +1046,18 @@ fn canvas_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, bin: Option<
     entry(app, ui, v, actions, "options", "Freeform View Options…", "projectPanel.freeformOptions", json!({}));
     ui.separator();
     background_menu(app, ui, v, bin.filter(|b| *b != app.session.project.root.id.0), actions);
+}
+
+#[cfg(test)]
+mod clear_tests {
+    use super::clear_params;
+    use filmcraft_project::ItemId;
+    use serde_json::json;
+
+    #[test]
+    fn clear_falls_back_to_the_selected_bin() {
+        assert_eq!(clear_params(&[], Some(7)), Some(json!({"items": [7]})));
+        assert_eq!(clear_params(&[ItemId(3)], Some(7)), Some(json!({})));
+        assert_eq!(clear_params(&[], None), None);
+    }
 }
