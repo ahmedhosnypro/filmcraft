@@ -66,6 +66,12 @@ fn video_entry(b: &mut B) {
 
 /// A video track at 59.94 fps, plus a Sony `rtmd` track whose first sample is `rtmd_sample`.
 fn file_with_rtmd(rtmd_sample: &[u8]) -> Vec<u8> {
+    file_with_rtmd_claimed(rtmd_sample, rtmd_sample.len() as u32)
+}
+
+/// As [`file_with_rtmd`] but the `rtmd` sample's `stsz` size is `claimed` (which may exceed the
+/// bytes actually present, as a corrupt file can).
+fn file_with_rtmd_claimed(rtmd_sample: &[u8], claimed: u32) -> Vec<u8> {
     let mut b = B::default();
     b.leaf(b"ftyp", b"isom\x00\x00\x00\x00isom");
     let mdat_start = b.0.len();
@@ -179,7 +185,7 @@ fn file_with_rtmd(rtmd_sample: &[u8]) -> Vec<u8> {
                         b.full(b"stsz", |b| {
                             b.u32(0);
                             b.u32(1);
-                            b.u32(rtmd_sample.len() as u32);
+                            b.u32(claimed);
                         });
                         b.full(b"stco", |b| {
                             b.u32(1);
@@ -221,5 +227,22 @@ fn rtmd_without_usable_sample_is_ignored() {
     // Too short to carry the timecode block: no start timecode, and no panic.
     let file = file_with_rtmd(&[0u8; 6]);
     let src = filmcraft_codecs::open_bytes("short.mp4", Arc::from(file.into_boxed_slice())).unwrap();
+    assert_eq!(src.info().start_timecode, None);
+}
+
+#[test]
+fn huge_claimed_rtmd_sample_does_not_exhaust_memory() {
+    // The stsz size claims 16 MiB but only the header bytes exist: only the fixed-size header is
+    // read, so a corrupt size cannot drive a huge allocation during open (issue #460 review).
+    let file = file_with_rtmd_claimed(&rtmd_sample(1, 2, 3, 4, 0), 16 * 1024 * 1024);
+    let src = filmcraft_codecs::open_bytes("big.mp4", Arc::from(file.into_boxed_slice())).unwrap();
+    assert_eq!(src.info().start_timecode, Some(223_384)); // 01:02:03:04 at 59.94
+}
+
+#[test]
+fn damaged_timecode_fields_are_not_published() {
+    // Frame 60 at 59.94 fps (valid range is 0–59): unusable metadata, not a fabricated time.
+    let file = file_with_rtmd(&rtmd_sample(3, 37, 12, 60, 0));
+    let src = filmcraft_codecs::open_bytes("bad.mp4", Arc::from(file.into_boxed_slice())).unwrap();
     assert_eq!(src.info().start_timecode, None);
 }

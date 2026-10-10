@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use filmcraft_color::ColorInfo;
 use filmcraft_frame::{AudioBuffer, Region, VideoFrame};
-use filmcraft_isobmff::{CleanAperture, CodecConfig, Mp4File, TrackKind};
+use filmcraft_isobmff::{ByteSource, CleanAperture, CodecConfig, Mp4File, TrackKind};
 use filmcraft_media::{AudioStreamInfo, FrameRequest, MediaError, MediaInfo, MediaKind, MediaSource, SharedSource, VideoStreamInfo};
 use filmcraft_time::{FrameRate, Tick};
 
@@ -162,22 +162,38 @@ fn color_from(entry: &filmcraft_isobmff::SampleEntry, w: u32, h: u32) -> ColorIn
     crate::stream_color::resolve(w, h, &sources)
 }
 
-/// Sony XAVC `rtmd` (real-time metadata) start timecode and drop-frame flag, read from the first
-/// sample. Sony stores the fields as raw decimal bytes in the sample's fixed header: hours,
-/// minutes, seconds, a drop-frame flag, then frames. The layout is proprietary and undocumented,
-/// so it is reproduced here from real footage; it is the same block ffmpeg reports as the
-/// `timecode` tag of an `rtmd` stream.
-fn rtmd_fields(sample: &[u8]) -> Option<(i64, i64, i64, i64, bool)> {
+/// First bytes of a Sony `rtmd` sample needed for the start-timecode block (`frames` is last).
+const RTMD_HEADER_LEN: usize = 0x12;
+
+/// Sony XAVC `rtmd` (real-time metadata) start timecode fields, read from the first sample: hours,
+/// minutes, seconds, a drop-frame flag and frames. Sony stores them as raw decimal bytes in the
+/// sample's fixed header. The layout is proprietary and undocumented, so it is reproduced here from
+/// real footage; it is the same block ffmpeg reports as the `timecode` tag of an `rtmd` stream.
+///
+/// Fields outside SMPTE bounds are rejected (no fabricated start time from damaged metadata);
+/// `base` is the timecode frame base (24, 25, 30, 60…), so a frame number must be below it.
+fn rtmd_fields(sample: &[u8], base: i64) -> Option<(i64, i64, i64, i64, bool)> {
     let f = sample.get(0x0d..0x12)?;
-    Some((f[0] as i64, f[1] as i64, f[2] as i64, f[4] as i64, f[3] != 0))
+    let (h, m, s) = (f[0] as i64, f[1] as i64, f[2] as i64);
+    let frames = f[4] as i64;
+    if h > 23 || m > 59 || s > 59 || frames >= base.max(1) {
+        return None;
+    }
+    Some((h, m, s, frames, f[3] != 0))
 }
 
 /// Start timecode from a Sony `rtmd` track as a frame count at `rate` (issue #460), used when the
 /// file has no `tmcd` track. `None` if there is no `rtmd` track or it has no usable first sample.
+/// Only the fixed-size header is read (a damaged `stsz` size can't drive a huge allocation).
 fn rtmd_start_timecode(file: &Mp4File, bytes: &crate::Src, rate: FrameRate) -> Option<i64> {
-    let ti = file.tracks.iter().position(|t| t.entries.first().is_some_and(|e| e.format.0 == *b"rtmd"))?;
-    let sample = file.read_sample(bytes, ti, 0).ok()?;
-    let (h, m, s, f, drop) = rtmd_fields(&sample)?;
+    let t = file.tracks.iter().find(|t| t.entries.first().is_some_and(|e| e.format.0 == *b"rtmd"))?;
+    let s = t.samples.first()?;
+    if s.size < RTMD_HEADER_LEN as u32 {
+        return None;
+    }
+    let mut buf = [0u8; RTMD_HEADER_LEN];
+    bytes.read_at(s.offset, &mut buf).ok()?;
+    let (h, m, s, f, drop) = rtmd_fields(&buf, rate.timecode_base())?;
     Some(filmcraft_time::fields_to_frames(h, m, s, f, rate, drop))
 }
 
@@ -938,15 +954,21 @@ mod tests {
     }
 
     #[test]
-    fn rtmd_fields_parse_and_ignore_short_samples() {
+    fn rtmd_fields_parse_and_reject_damaged_metadata() {
         // 03:37:12:34, non-drop (a Sony FX3/a6400 XAVC header).
         let mut s = [0u8; 24];
         s[0x0d..0x12].copy_from_slice(&[3, 37, 12, 0, 34]);
-        assert_eq!(rtmd_fields(&s), Some((3, 37, 12, 34, false)));
+        assert_eq!(rtmd_fields(&s, 60), Some((3, 37, 12, 34, false)));
         s[0x10] = 1;
-        assert_eq!(rtmd_fields(&s), Some((3, 37, 12, 34, true)));
+        assert_eq!(rtmd_fields(&s, 60), Some((3, 37, 12, 34, true)));
         // Too short to hold the block: no fields, no panic.
-        assert_eq!(rtmd_fields(&[0u8; 6]), None);
+        assert_eq!(rtmd_fields(&[0u8; 6], 60), None);
+        // Damaged fields are rejected rather than normalized into a plausible time.
+        for bad in [[3, 37, 12, 0, 60], [3, 60, 0, 0, 0], [24, 0, 0, 0, 0], [0, 0, 60, 0, 0]] {
+            let mut b = [0u8; 24];
+            b[0x0d..0x12].copy_from_slice(&bad);
+            assert_eq!(rtmd_fields(&b, 60), None, "{bad:?}");
+        }
     }
 }
 
