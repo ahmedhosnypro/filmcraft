@@ -249,3 +249,18 @@ fn link_multiple_video_and_audio_pairs_creates_one_link_per_pair() {
     assert_ne!(l1, l2, "different pairs must not share the same link id");
     assert_ne!(l0, l2, "different pairs must not share the same link id");
 }
+
+/// A video clip with no overlapping selected audio, and audio with no overlapping video, stay
+/// unlinked: a one-member link would make the clip read as "linked" with no partner.
+#[test]
+fn link_leaves_clips_without_a_partner_unlinked() {
+    let mut s = demo();
+    let (v, a) = (v1(&s), a1(&s));
+    let (v0, v1, a0, a2) = (v[0].id, v[1].id, a[0].id, a[2].id);
+    s.execute("clip.link", json!({"clips": [v0.0, v1.0, a0.0, a2.0]})).unwrap();
+    s.execute("clip.link", json!({"clips": [v0.0, v1.0, a0.0, a2.0]})).unwrap();
+    assert!(clip(&s, v0).unwrap().link.is_some());
+    assert_eq!(clip(&s, v0).unwrap().link, clip(&s, a0).unwrap().link);
+    assert_eq!(clip(&s, v1).unwrap().link, None, "v1 has no overlapping audio in the selection");
+    assert_eq!(clip(&s, a2).unwrap().link, None, "a2 has no overlapping video in the selection");
+}

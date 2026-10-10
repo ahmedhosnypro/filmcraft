@@ -65,14 +65,18 @@ let availability = filmcraft_platform::register(); // Available("VideoToolbox") 
   `nvEncodeAPI64.dll` (Windows) or `libnvidia-encode.so.1` (Linux), API 12.1, is loaded at run time,
   so machines without NVIDIA still start. Windows uses a Direct3D 11 device; Linux retains a primary
   CUDA context through the runtime-loaded `libcuda.so.1`, released after the encoder is destroyed.
-  No SDK, CUDA toolkit or NVIDIA binaries are bundled or required at build time. RGBA is converted with the software encoder's own BT.709 limited conversion into NV12
-  input buffers (a ring of eight); the encoder runs preset P5 with high-quality tuning, CABAC (CAVLC
+  No SDK, CUDA toolkit or NVIDIA binaries are bundled or required at build time. 8-bit pictures go
+  in as the export's RGBA (ABGR input buffers, a ring of eight) and NVENC converts them to BT.709
+  limited 4:2:0 on the GPU, with the same codes as the software encoder's own conversion; a driver
+  that refuses RGB input gets that CPU conversion into NV12 instead. The conversion used to run on
+  the encode thread, where it competed with the render of the next frames for the thread pool and
+  held NVENC back. The encoder runs preset P5 with high-quality tuning, CABAC (CAVLC
   for Baseline), one B-frame when the profile and GPU allow it, and an IDR at every keyframe
   distance; the parameter sets go into `avcC`. Export ▸ Hardware encoding (off by default) selects it.
   It declines two-pass VBR, HDR, MXF, interlaced output, sizes outside NVENC's limits and systems
   without an NVIDIA GPU or driver, and the software encoder runs instead. A failure during an export
   ends it with an error, since a hardware stream cannot be finished in software. The same session,
-  ring and NV12 path encode H.265, see [Hardware H.265 (HEVC) encoding (Windows,
+  ring and input path encode H.265, see [Hardware H.265 (HEVC) encoding (Windows,
   NVENC)](#hardware-h265-hevc-encoding-windows-nvenc).
 - **Linux: VA-API, H.264 (`avcC`) and HEVC (`hvcC`)**: H.264 8-bit 4:2:0 progressive, Constrained
   Baseline / Main / High; HEVC Main, Main 10 and Main Still Picture, 4:2:0 8- and 10-bit (`vaapi/`), on Intel (iHD, i965), AMD and other Mesa drivers. `libva.so.2` and `libva-drm.so.2`
@@ -281,6 +285,7 @@ level 4 High tier, which many hardware decoders refuse; it is now level 4.1 Main
 | `tests/nvenc_export.rs` (Windows / Linux; fallback also tested without NVIDIA) | Export with hardware encoding against the software encoder through the export pipeline: the two decoded files at worst 54.8 dB luma PSNR; ffmpeg decodes the file without errors; declined cases go to the software encoder; the counters |
 | `tests/nvenc_hevc.rs` (Windows, NVIDIA with HEVC) | HEVC from NVENC (1280×720, 6 Mbps, 72 frames, keyframe every 24) decodes with our HEVC decoder at worst 48.9 dB luma / 51.0 dB chroma PSNR; IDR at 0, 24, 48; dts strictly increasing, pts a permutation, `sps_max_num_reorder_pics` within the dts shift; no parameter sets in the samples; the `hvcC`'s profile / tier / level bytes are the SPS's own; VUI BT.709 limited and timing `(1, 24)`; hostile configurations, sizes, planes and encoders dropped mid-stream give errors, never panics; keyframes every 1–2 pictures without B-frames |
 | `tests/nvenc_hevc_export.rs` (Windows, NVIDIA with HEVC) | H.265 export through the real pipeline, MP4 and QuickTime, toggle Auto and Off: counters (72 frames, 1 session, 0 declined), our decoder against the software H.264 export at worst 54.8 dB luma PSNR, ffprobe `codec_name=hevc`, `profile=Main`, `codec_tag_string=hvc1`, `pix_fmt=yuv420p`, BT.709 limited, 72 frames, 24/1, keyframes at 0 and 48, start 0, `ffmpeg -xerror` clean; with AAC audio; 1920×1080 and 642×362 cropped back from the coded size; every decline (HDR, analysis pass, two-pass, interlaced, non-square pixels, MXF, sizes over 65535, odd sizes, sizes outside the GPU's limits) an error naming NVENC, counted once; H.264 with hardware encoding Off never touches NVENC |
+| `tests/nvenc_rgba_input.rs` (Windows, NVIDIA) | RGBA input, HEVC Main and H.264 High, 1280×720: solid red, green, blue, white, black and grey decode (our decoder) to the exact BT.709 limited codes of `rgba_to_yuv420_8`, within 2; a moving picture at worst 47.7 dB luma / 50.7 dB chroma PSNR against that conversion; Main 10 has no RGBA input; short pictures and planar / RGBA pictures for the other kind of encoder are errors |
 | `tests/nvenc_hevc_probe.rs` (Windows) | the HEVC probe in a fresh process: its cost, the cached answer, `available(Hevc)` following it after `register()` (twice) |
 | `tests/nvenc_hevc_warm.rs` (Windows) | `register()` answers the HEVC and the Main 10 questions on a thread of its own, before anyone asks; the answers are kept and `hdr_available(Hevc)` follows the Main 10 probe |
 | `tests/nvenc_hevc_main10.rs` (Windows, NVIDIA with 10-bit HEVC) | HEVC Main 10 in process, PQ and HLG: a float picture (grey ramp to peak white, a moving box, saturated BT.2020 bars) is converted with `rgbf_to_yuv420_10`, encoded and decoded with our HEVC decoder (`Yuv16`, 10 bits, codes below 1024): worst 71.1 dB luma / 70.6 dB chroma PSNR on the 10-bit scale, 803 distinct luma levels on a ramp row, peak code 940 survives; IDR at 0 and 24; the VUI is BT.2020 / 16 or 18 / BT.2020 NCL / limited; the IDR samples carry two prefix SEI NAL units whose messages are byte-for-byte the expected 137 / 144 payloads (HLG: none; other pictures: none); Main and Main 10 refuse each other's pictures; hostile sizes, bitrates, signals, huge or empty SEI payloads, encoders dropped with SEI in flight |

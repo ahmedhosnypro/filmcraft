@@ -34,14 +34,16 @@ pub enum Language {
     /// Persisted as `pt-br` (the blanket `rename_all` would produce `ptbr`).
     #[serde(rename = "pt-br")]
     PtBr,
+    Uk,
 }
 
 static JAPANESE: OnceLock<Catalog> = OnceLock::new();
 static SPANISH: OnceLock<Catalog> = OnceLock::new();
 static PORTUGUESE: OnceLock<Catalog> = OnceLock::new();
+static UKRAINIAN: OnceLock<Catalog> = OnceLock::new();
 
 impl Language {
-    pub const ALL: [Self; 4] = [Self::En, Self::Ja, Self::Es, Self::PtBr];
+    pub const ALL: [Self; 5] = [Self::En, Self::Ja, Self::Es, Self::PtBr, Self::Uk];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -49,6 +51,7 @@ impl Language {
             Self::Ja => "日本語",
             Self::Es => "Español",
             Self::PtBr => "Português (Brasil)",
+            Self::Uk => "Українська",
         }
     }
 
@@ -58,6 +61,7 @@ impl Language {
             "ja" => Some(Self::Ja),
             "es" => Some(Self::Es),
             "pt-br" => Some(Self::PtBr),
+            "uk" => Some(Self::Uk),
             _ => None,
         }
     }
@@ -66,7 +70,7 @@ impl Language {
     /// (BCP 47 or POSIX locale tags such as `es-419`, `pt_BR.UTF-8`, most preferred first) that the
     /// interface has, else English. Any Portuguese gets the Brazilian catalog, the only one there is.
     pub fn from_locales(tags: &[String]) -> Self {
-        const PRIMARY: [(&str, Language); 4] = [("en", Language::En), ("ja", Language::Ja), ("es", Language::Es), ("pt", Language::PtBr)];
+        const PRIMARY: [(&str, Language); 5] = [("en", Language::En), ("ja", Language::Ja), ("es", Language::Es), ("pt", Language::PtBr), ("uk", Language::Uk)];
         tags.iter()
             .find_map(|tag| {
                 let primary = tag.split(['-', '_', '.', '@']).next().unwrap_or_default();
@@ -82,6 +86,7 @@ impl Language {
             Self::Ja => "ja",
             Self::Es => "es",
             Self::PtBr => "pt-br",
+            Self::Uk => "uk",
         }
     }
 
@@ -92,6 +97,7 @@ impl Language {
             Self::Ja => Some(JAPANESE.get_or_init(|| Catalog::parse(include_str!("ja.tsv")))),
             Self::Es => Some(SPANISH.get_or_init(|| Catalog::parse(include_str!("es.tsv")))),
             Self::PtBr => Some(PORTUGUESE.get_or_init(|| Catalog::parse(include_str!("pt-br.tsv")))),
+            Self::Uk => Some(UKRAINIAN.get_or_init(|| Catalog::parse(include_str!("uk.tsv")))),
         }
     }
 
@@ -246,7 +252,9 @@ mod tests {
 
     #[test]
     fn catalogs_are_well_formed() {
-        for (code, text) in [("es", include_str!("es.tsv")), ("ja", include_str!("ja.tsv")), ("pt-br", include_str!("pt-br.tsv"))] {
+        for (code, text) in
+            [("es", include_str!("es.tsv")), ("ja", include_str!("ja.tsv")), ("pt-br", include_str!("pt-br.tsv")), ("uk", include_str!("uk.tsv"))]
+        {
             let (entries, errors) = catalog::parse_entries(text);
             assert!(errors.is_empty(), "{code}: {errors:?}");
             for (i, (ctx, en, tr)) in entries.iter().enumerate() {
@@ -268,6 +276,10 @@ mod tests {
         assert_eq!(Language::PtBr.tr("File"), "Arquivo");
         assert_eq!(Language::PtBr.tr("meu video.mp4"), "meu video.mp4");
         assert_eq!(Language::PtBr.name(), "Português (Brasil)");
+        assert_eq!(Language::Uk.name(), "Українська");
+        assert_eq!(Language::Uk.tr("File"), "Файл");
+        assert_eq!(Language::Uk.tr("мій кліп.mp4"), "мій кліп.mp4");
+        assert_eq!(Language::Uk.tr("An untranslated label"), "An untranslated label");
         for l in Language::ALL {
             assert_eq!(Language::parse(l.code()), Some(l));
             let json = serde_json::to_string(&l).unwrap();
@@ -368,7 +380,8 @@ mod tests {
                 if p.is_dir() {
                     dirs.push(p);
                 } else if p.extension().is_some_and(|e| e == "rs") {
-                    let text = std::fs::read_to_string(&p).unwrap_or_default();
+                    // a Windows checkout with core.autocrlf has CRLF, which the `\n` below would not match
+                    let text = std::fs::read_to_string(&p).unwrap_or_default().replace("\r\n", "\n");
                     let cut = text.find("#[cfg(test)]\nmod tests").unwrap_or(text.len());
                     out.push((p.display().to_string(), text[..cut].to_string()));
                 }
@@ -474,6 +487,7 @@ mod tests {
             }
         }
         crate::panels::timeline::CLIP_MENU.iter().flat_map(|g| g.iter()).for_each(|(l, _)| push(&mut out, l));
+        crate::panels::timeline::EDIT_POINT_TYPES.iter().for_each(|(l, ..)| push(&mut out, l));
         crate::panels::project::NEW_ITEMS.iter().for_each(|(l, _)| push(&mut out, l));
         // section headers keyed by their English name (collapsed state), translated when drawn
         let sections = [
@@ -624,6 +638,21 @@ mod tests {
         assert_eq!(app.ui.language, Language::PtBr);
         assert_eq!(app.session.prefs.general.interface_language, "pt-br");
         assert!(crate::menus::menu_items(&app).iter().any(|it| it.id == "app.language.portuguese" && it.checked == Some(true)));
+        let result = crate::menus::invoke(&mut app, &ctx, "app.language.ukrainian", serde_json::json!({})).unwrap();
+        assert_eq!(result, serde_json::json!("uk"));
+        assert_eq!(app.ui.language, Language::Uk);
+        for item in crate::menus::menu_items(&app).iter().filter(|it| it.id.starts_with("app.language.")) {
+            assert_eq!(item.checked, Some(item.id == "app.language.ukrainian"), "{}", item.id);
+        }
+        let saved = serde_json::to_string(&app.ui).unwrap();
+        assert!(saved.contains("\"language\":\"uk\""), "{saved}");
+        let restored: crate::state::UiState = serde_json::from_str(&saved).unwrap();
+        assert_eq!(restored.language, Language::Uk);
+        assert_eq!(app.session.prefs.general.interface_language, "uk");
+        let prefs = serde_json::to_string(&app.session.prefs).unwrap();
+        let mut restarted = filmcraft_engine::Session::default();
+        restarted.prefs = serde_json::from_str(&prefs).unwrap();
+        assert_eq!(crate::FilmcraftApp::new(restarted).ui.language, Language::Uk);
         crate::menus::invoke(&mut app, &ctx, "app.language.english", serde_json::json!({})).unwrap();
         assert_eq!(app.ui.language, Language::En);
         set_current(Language::En);
@@ -638,6 +667,9 @@ mod tests {
         assert_eq!(l(&["ES"]), Language::Es);
         assert_eq!(l(&["ja-JP"]), Language::Ja);
         assert_eq!(l(&["pt-BR"]), Language::PtBr);
+        for tag in ["uk", "uk-UA", "uk_UA.UTF-8", "UK-ua"] {
+            assert_eq!(l(&[tag]), Language::Uk);
+        }
         assert_eq!(l(&["pt_PT.UTF-8@euro"]), Language::PtBr);
         assert_eq!(l(&["fr-FR", "de", "es-MX", "ja"]), Language::Es, "the first one the interface has");
         assert_eq!(l(&["en-GB", "es"]), Language::En);
@@ -680,6 +712,57 @@ mod tests {
         assert_eq!(app.ui.language, Language::Es);
         assert_eq!(asked.get(), asked_before + 1);
         set_current(Language::En);
+    }
+
+    #[test]
+    fn ukrainian_entries_cover_the_original_menu_catalog() {
+        let app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
+        let items = crate::menus::menu_items(&app);
+        let known = |text: &str| crate::menus::MENUS.contains(&text) || items.iter().any(|it| it.label == text || it.path.iter().any(|p| p == text));
+        let (entries, _) = catalog::parse_entries(include_str!("uk.tsv"));
+        for (_, en, _) in entries {
+            assert!(known(&en) || en == "Settings", "not a menu label: {en}");
+        }
+        let (portuguese, _) = catalog::parse_entries(include_str!("pt-br.tsv"));
+        for (_, en, _) in portuguese {
+            assert!(Language::Uk.has(&en), "missing Ukrainian menu label: {en}");
+        }
+        for en in crate::menus::MENUS.into_iter().chain(["Audio", "Settings"]) {
+            assert_ne!(Language::Uk.tr(en), en, "untranslated Ukrainian menu: {en}");
+        }
+    }
+
+    #[test]
+    fn ukrainian_renders_with_bundled_fonts() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx, &crate::theme::Tokens::for_kind(crate::theme::ThemeKind::default()));
+        let mut output = ctx.run_ui(egui::RawInput::default(), |_| {});
+        output.textures_delta.clear();
+        let (entries, _) = catalog::parse_entries(include_str!("uk.tsv"));
+        ctx.fonts_mut(|fonts| {
+            // Include the entire alphabet, even letters not yet used by a translated menu label.
+            let alphabet = "АБВГҐДЕЄЖЗИІЇЙКЛМНОПРСТУФХЦЧШЩЬЮЯабвгґдеєжзиіїйклмнопрстуфхцчшщьюя";
+            let chars: std::collections::BTreeSet<_> = alphabet
+                .chars()
+                .chain(Language::Uk.name().chars())
+                .chain(entries.iter().flat_map(|(_, _, uk)| uk.chars()))
+                .filter(|ch| !ch.is_ascii())
+                .collect();
+            for family in crate::theme::font_families() {
+                let font = egui::FontId::new(13.0, family);
+                // has_glyph compares font faces, giving false negatives when Inter also supplies
+                // the replacement character (the named medium/semibold stacks). Compare the
+                // actual glyph texture regions instead; the noncharacter U+10FFFF is missing.
+                let text: String = chars.iter().copied().chain(['\u{10ffff}']).collect();
+                let galley = fonts.layout_no_wrap(text, font.clone(), egui::Color32::WHITE);
+                let glyphs = &galley.rows[0].glyphs;
+                assert_eq!(glyphs.len(), chars.len() + 1);
+                let replacement = glyphs.last().unwrap().uv_rect;
+                for glyph in glyphs.iter().take(chars.len()) {
+                    assert_ne!(glyph.uv_rect, replacement, "missing {} in {font:?}", glyph.chr);
+                }
+            }
+        });
     }
 
     #[test]
