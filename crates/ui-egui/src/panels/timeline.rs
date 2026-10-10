@@ -355,7 +355,11 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         }
         let bg = if r.index % 2 == 0 { t.tl_track_bg } else { t.tl_track_bg_alt };
         painter.rect_filled(row, 0.0, bg);
-        painter.line_segment([pos2(row.min.x, r.rect.max.y - 0.5), pos2(row.max.x, r.rect.max.y - 0.5)], Stroke::new(1.0, t.tl_bg));
+        painter.line_segment([pos2(row.min.x, r.rect.max.y - 0.5), pos2(row.max.x, r.rect.max.y - 0.5)], Stroke::new(1.0, t.separator));
+        // the top video track also gets a line above it
+        if r.kind == TrackKind::Video && r.index + 1 == nv {
+            painter.line_segment([pos2(row.min.x, r.rect.min.y + 0.5), pos2(row.max.x, r.rect.min.y + 0.5)], Stroke::new(1.0, t.separator));
+        }
     }
     // in/out shading across tracks
     if seq.mark_in.is_some() || seq.mark_out.is_some() {
@@ -491,15 +495,11 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let ph = app.session.playhead();
     let px = layout.x_of(ph);
     if px >= content.min.x - 1.0 && px <= content.max.x + 1.0 {
-        let head = [
-            pos2(px - 6.0, ruler.min.y + 2.0),
-            pos2(px + 6.0, ruler.min.y + 2.0),
-            pos2(px + 6.0, ruler.max.y - 10.0),
-            pos2(px, ruler.max.y - 4.0),
-            pos2(px - 6.0, ruler.max.y - 10.0),
-        ];
+        // a short head on the tick row, as in Effect Controls, so it leaves the markers and timecodes clear
+        let (top, tip) = (ruler.max.y - 13.0, ruler.max.y);
+        let head = [pos2(px - 5.0, top), pos2(px + 5.0, top), pos2(px + 5.0, tip - 5.0), pos2(px, tip), pos2(px - 5.0, tip - 5.0)];
         painter.add(egui::Shape::convex_polygon(head.to_vec(), t.playhead, Stroke::NONE));
-        painter.line_segment([pos2(px, ruler.max.y - 4.0), pos2(px, content.max.y)], Stroke::new(1.0, t.playhead));
+        painter.line_segment([pos2(px, tip), pos2(px, content.max.y)], Stroke::new(1.0, t.playhead));
     }
     // snap indicator
     if let Some(sx) = app.tl.snap_x.take() {
@@ -1024,6 +1024,9 @@ fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, rows:
         let p = ui.painter().with_clip_rect(visible);
         p.rect_filled(hrect, 0.0, t.tl_header_bg);
         p.line_segment([pos2(hrect.min.x, hrect.max.y - 0.5), pos2(hrect.max.x, hrect.max.y - 0.5)], Stroke::new(1.0, t.separator));
+        if r.kind == TrackKind::Video && r.index + 1 == seq.video_tracks.len() {
+            p.line_segment([pos2(hrect.min.x, hrect.min.y + 0.5), pos2(hrect.max.x, hrect.min.y + 0.5)], Stroke::new(1.0, t.separator));
+        }
         let label = format!("{}{}", if r.kind == TrackKind::Video { "V" } else { "A" }, r.index + 1);
         let btn_rect = |x0: f32| Rect::from_min_max(pos2(hrect.min.x + x0, hrect.min.y + 1.0), pos2(hrect.min.x + x0 + 24.0, hrect.max.y - 2.0));
         // 1. source patch (absent when unpatched)
