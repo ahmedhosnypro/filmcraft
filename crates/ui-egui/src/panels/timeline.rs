@@ -1996,7 +1996,9 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                 }
             }
             (_, Grab::Other(Hit::Transition { .. })) => None,
-            (_, Grab::Other(Hit::Empty { .. })) => {
+            // empty space: an empty stretch of a track, or no track at all (below the tracks, between
+            // the video and audio tracks, #683)
+            (_, Grab::Other(Hit::Empty { .. } | Hit::None)) if layout.content.contains(p) => {
                 if resp.drag_started() {
                     Some(Drag::Marquee { start: p })
                 } else {
@@ -2006,7 +2008,7 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                     None
                 }
             }
-            (_, Grab::Other(Hit::None)) => None,
+            (_, Grab::Other(Hit::Empty { .. } | Hit::None)) => None,
         };
         if let Some(d) = started {
             if matches!(d, Drag::Scrub) {
