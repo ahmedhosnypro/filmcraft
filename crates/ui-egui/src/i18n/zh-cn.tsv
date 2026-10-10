@@ -2883,6 +2883,7 @@
 	Target Bitrate	目标码率
 	Adaptive ({bpp} bits per pixel)	自适应（每像素 {bpp} 位）
 	Maximum Bitrate	最大码率
+	Quality (CRF)	质量 (CRF)
 	Key Frame Distance	关键帧间隔
 	Quality	质量
 	Render at Maximum Depth	以最大深度渲染
@@ -3287,6 +3288,7 @@
 	Upper First	上方优先
 	VBR, 1 pass	VBR，1 遍
 	VBR, 2 pass	VBR，2 遍
+	CRF (constant quality)	CRF（恒定质量）
 	Vimeo 1080p Full HD	Vimeo 1080p 全高清
 	Vimeo 2160p 4K Ultra HD	Vimeo 2160p 4K 超高清
 	Voice-over Record	画外音录制
