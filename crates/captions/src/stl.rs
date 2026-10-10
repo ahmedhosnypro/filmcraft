@@ -219,8 +219,7 @@ fn encode_text(text: &str) -> Vec<u8> {
             // Only a syntactically plausible tag is markup. Comparisons such as
             // "2 < 3 > 1" and "x < y > z" must not lose their middle text.
             let name = tag.strip_prefix('/').unwrap_or(tag);
-            let is_tag = name.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)
-                && tag.trim() == tag;
+            let is_tag = name.as_bytes().first().is_some_and(u8::is_ascii_alphabetic);
             if is_tag {
                 match tag.to_ascii_lowercase().as_str() {
                     "i" => out.push(0x80),
@@ -477,6 +476,7 @@ mod tests {
         assert_eq!(decoded.cues[0].text, literal);
         // Recognized styling still becomes STL control bytes.
         assert_eq!(encode_text("<i>Hi</i>"), vec![0x80, b'H', b'i', 0x81]);
+        assert_eq!(encode_text("<i >Hi</i >"), vec![0x80, b'H', b'i', 0x81]);
     }
 
     #[test]
