@@ -190,6 +190,9 @@ pub struct TimelineView {
     pub audio_track_h: f32,
     pub header_w: f32,
     pub show_thumbnails: bool,
+    /// Which frames a video clip shows while `show_thumbnails` is on (the wrench menu).
+    #[serde(default)]
+    pub thumbnail_mode: ThumbnailMode,
     pub show_waveforms: bool,
     /// Follow playhead during playback (page scroll).
     pub follow: bool,
@@ -225,12 +228,42 @@ impl Default for TimelineView {
             audio_track_h: 56.0,
             header_w: 204.0,
             show_thumbnails: true,
+            thumbnail_mode: ThumbnailMode::Head,
             show_waveforms: true,
             follow: true,
             fit_pending: true,
             fit_empty: None,
             track_lanes: Default::default(),
         }
+    }
+}
+
+/// Video thumbnails on timeline clips (Timeline wrench menu ▸ Show Video Thumbnails).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ThumbnailMode {
+    /// The clip's first frame at its head.
+    #[default]
+    Head,
+    /// The first frame at the head and the last one at the tail.
+    HeadAndTail,
+    /// Frames side by side across the whole clip.
+    Continuous,
+}
+
+impl ThumbnailMode {
+    pub const ALL: [ThumbnailMode; 3] = [ThumbnailMode::Head, ThumbnailMode::HeadAndTail, ThumbnailMode::Continuous];
+
+    /// The name used by automation ids and `ui.set` (`timeline.thumbnails`).
+    pub fn name(self) -> &'static str {
+        match self {
+            ThumbnailMode::Head => "head",
+            ThumbnailMode::HeadAndTail => "headAndTail",
+            ThumbnailMode::Continuous => "continuous",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<ThumbnailMode> {
+        Self::ALL.into_iter().find(|m| m.name().eq_ignore_ascii_case(name))
     }
 }
 

@@ -19,7 +19,7 @@ use serde_json::{Value, json};
 
 use crate::FilmcraftApp;
 use crate::icons::{self, Icon};
-use crate::state::{TimelineView, Tool};
+use crate::state::{ThumbnailMode, TimelineView, Tool};
 use crate::theme::Tokens;
 
 use super::timeline_hit::{EdgeKind, Grab, edge_geometry, grab_at};
@@ -604,6 +604,36 @@ fn in_range(app: &FilmcraftApp, it: &TrackItem) -> bool {
     it.start < b && it.end() > a
 }
 
+/// Most thumbnails one clip draws: a long clip far zoomed in only shows the visible ones anyway.
+const MAX_THUMBNAIL_TILES: usize = 256;
+
+/// The video thumbnails of a clip whose picture area spans `x0..x1` (points), for frames `tile_w`
+/// wide: the left edge of each tile and the offset into the clip (`dur` long, frames of `frame`)
+/// whose picture it shows. Only tiles that meet `visible` (the panel's x range) are listed.
+/// Continuous tiles sit on a grid anchored at the clip's head, so scrolling only reveals new tiles
+/// and the others keep their frames. A clip too narrow for more than one tile shows its head.
+pub fn thumbnail_tiles(mode: ThumbnailMode, x0: f32, x1: f32, tile_w: f32, visible: (f32, f32), dur: Tick, frame: Tick) -> Vec<(f32, Tick)> {
+    let width = x1 - x0;
+    if !(x0.is_finite() && width.is_finite() && width > 0.0 && tile_w.is_finite() && tile_w >= 1.0) {
+        return Vec::new();
+    }
+    let last = (dur - frame).max(Tick::ZERO);
+    let offset_at = |x: f32| Tick(((x - x0) as f64 / width as f64 * dur.0 as f64).round() as i64).clamp(Tick::ZERO, last);
+    let shown = |x: f32| x < visible.1 && x + tile_w > visible.0;
+    let head = (x0, Tick::ZERO);
+    let tiles = match mode {
+        ThumbnailMode::Head => vec![head],
+        ThumbnailMode::HeadAndTail if width >= 2.0 * tile_w => vec![head, (x1 - tile_w, last)],
+        ThumbnailMode::HeadAndTail => vec![head],
+        ThumbnailMode::Continuous => {
+            let first = ((visible.0 - x0).max(0.0) / tile_w).floor() as usize;
+            let end = ((visible.1.min(x1) - x0) / tile_w).ceil().max(1.0) as usize;
+            (first..end).take(MAX_THUMBNAIL_TILES).map(|k| x0 + k as f32 * tile_w).map(|x| (x, offset_at(x))).collect()
+        }
+    };
+    tiles.into_iter().filter(|(x, _)| shown(*x)).collect()
+}
+
 #[allow(clippy::too_many_arguments)]
 fn draw_clip(
     app: &mut FilmcraftApp,
@@ -632,7 +662,8 @@ fn draw_clip(
     p.line_segment([pos2(body.min.x, body.min.y + 0.5), pos2(body.max.x, body.min.y + 0.5)], Stroke::new(1.0, lighten(fill, 0.15)));
     let name_h = 16.0;
     let w = body.width();
-    // head thumbnail (video): left-aligned, aspect-correct, below the name band
+    // video thumbnails, aspect-correct, below the name band: the head frame, head and tail, or
+    // frames side by side across the clip (Show Video Thumbnails in the wrench menu)
     if kind == TrackKind::Video && app.ui.timeline.show_thumbnails && body.height() > 28.0 && w > 20.0 && it.enabled {
         let th = Rect::from_min_max(pos2(body.min.x + 1.0, body.min.y + name_h), pos2(body.max.x - 1.0, body.max.y - 1.0));
         let aspect = app.session.project.item(it.item).and_then(|pi| match &pi.kind {
@@ -640,24 +671,28 @@ fn draw_clip(
             filmcraft_project::ItemKind::Sequence(s) => Some(s.settings.width as f32 / s.settings.height as f32),
             _ => None,
         });
-        if let Some(aspect) = aspect {
-            let tw = (th.height() * aspect).min(th.width());
-            let mt = rate.snap(it.source_in);
-            // a multi-camera clip shows its angle's clip
-            let (thumb_item, mt) = app
-                .session
-                .project
-                .sequence(it.item)
-                .and_then(|q| {
-                    let ti = q.angle_video_track_index(it.multicam_angle(q)?)?;
-                    let inner = q.video_tracks[ti].item_at(mt)?;
-                    Some((inner.item, inner.source_time_at(mt)))
-                })
-                .unwrap_or((it.item, mt));
-            if let Some((tex, _)) = app.thumbnail(ctx, thumb_item, mt, 160) {
-                let r = Rect::from_min_size(th.min, vec2(tw, th.height()));
-                let cp = p.with_clip_rect(th.intersect(p.clip_rect()));
-                cp.image(tex, r, Rect::from_min_max(pos2(0.0, 0.0), pos2((tw / (th.height() * aspect)).min(1.0), 1.0)), Color32::WHITE);
+        if let Some(aspect) = aspect.filter(|a| a.is_finite() && *a > 0.0) {
+            let tw = th.height() * aspect;
+            let cp = p.with_clip_rect(th.intersect(p.clip_rect()));
+            let visible = (cp.clip_rect().min.x, cp.clip_rect().max.x);
+            let mode = app.ui.timeline.thumbnail_mode;
+            for (x, offset) in thumbnail_tiles(mode, th.min.x, th.max.x, tw, visible, it.duration, rate.frame_duration()) {
+                let mt = rate.snap(it.source_time_at(it.start + offset));
+                // a multi-camera clip shows its angle's clip
+                let (thumb_item, mt) = app
+                    .session
+                    .project
+                    .sequence(it.item)
+                    .and_then(|q| {
+                        let ti = q.angle_video_track_index(it.multicam_angle(q)?)?;
+                        let inner = q.video_tracks.get(ti)?.item_at(mt)?;
+                        Some((inner.item, inner.source_time_at(mt)))
+                    })
+                    .unwrap_or((it.item, mt));
+                if let Some((tex, _)) = app.thumbnail(ctx, thumb_item, mt, 160) {
+                    let r = Rect::from_min_size(pos2(x, th.min.y), vec2(tw, th.height()));
+                    cp.image(tex, r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+                }
             }
         }
     }
@@ -1211,7 +1246,20 @@ fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq: &Sequenc
         }
         if key == "settings" {
             egui::Popup::menu(&resp).show(|ui| {
-                ui.checkbox(&mut app.ui.timeline.show_thumbnails, tl!("Show Video Thumbnails"));
+                let c = ui.checkbox(&mut app.ui.timeline.show_thumbnails, tl!("Show Video Thumbnails"));
+                app.auto.add("timeline.settings.showThumbnails", c.rect, "Show Video Thumbnails");
+                let on = app.ui.timeline.show_thumbnails;
+                ui.indent("timeline.settings.thumbnails", |ui| {
+                    for (mode, label) in
+                        [(ThumbnailMode::Head, tl!("Head")), (ThumbnailMode::HeadAndTail, tl!("Head and Tail")), (ThumbnailMode::Continuous, tl!("Continuous"))]
+                    {
+                        let r = ui.add_enabled(on, egui::RadioButton::new(app.ui.timeline.thumbnail_mode == mode, label));
+                        app.auto.add(&format!("timeline.settings.thumbnails.{}", mode.name()), r.rect, label);
+                        if r.clicked() {
+                            app.ui.timeline.thumbnail_mode = mode;
+                        }
+                    }
+                });
                 ui.checkbox(&mut app.ui.timeline.show_waveforms, tl!("Show Audio Waveform"));
                 ui.separator();
                 let mut te = app.session.state.show_through_edits;
@@ -2549,5 +2597,49 @@ mod chain_starts_tests {
     #[test]
     fn negative_durations_count_as_zero() {
         assert_eq!(chain_starts(Tick(5), &[Tick(-3), Tick(4)]), vec![Tick(5), Tick(5)]);
+    }
+}
+
+#[cfg(test)]
+mod thumbnail_tiles_tests {
+    use super::*;
+
+    const S: Tick = Tick(TICKS_PER_SECOND);
+    const FRAME: Tick = Tick(TICKS_PER_SECOND / 25);
+
+    #[test]
+    fn continuous_thumbnails_tile_the_visible_part_of_the_clip() {
+        // a 10 s clip 1000 pt wide, 80 pt tiles, the panel showing x 250..650
+        let tiles = thumbnail_tiles(ThumbnailMode::Continuous, 0.0, 1000.0, 80.0, (250.0, 650.0), Tick(10 * S.0), FRAME);
+        let xs: Vec<f32> = tiles.iter().map(|t| t.0).collect();
+        assert_eq!(xs, [240.0, 320.0, 400.0, 480.0, 560.0, 640.0]);
+        // each tile shows the clip time under its left edge (100 pt per second)
+        assert_eq!(tiles[0].1, Tick(24 * S.0 / 10));
+        assert_eq!(tiles[5].1, Tick(64 * S.0 / 10));
+        // scrolling 30 pt moves the tiles with the clip: the ones still shown keep their frames
+        let scrolled = thumbnail_tiles(ThumbnailMode::Continuous, -30.0, 970.0, 80.0, (250.0, 650.0), Tick(10 * S.0), FRAME);
+        assert_eq!(scrolled.first(), Some(&(210.0, tiles[0].1)));
+        assert!(scrolled.iter().all(|(x, t)| tiles.iter().any(|(x0, t0)| *x0 - 30.0 == *x && t0 == t)));
+        // the last tile never shows a time past the clip's last frame
+        let end = thumbnail_tiles(ThumbnailMode::Continuous, 0.0, 1000.0, 80.0, (0.0, 2000.0), Tick(10 * S.0), FRAME);
+        assert_eq!(end.len(), 13);
+        assert!(end.iter().all(|(_, t)| *t <= Tick(10 * S.0) - FRAME));
+        // a clip far zoomed in asks for a bounded number of frames
+        let huge = thumbnail_tiles(ThumbnailMode::Continuous, -1.0e9, 1.0e9, 1.0, (-2.0e9, 2.0e9), Tick(10 * S.0), FRAME);
+        assert_eq!(huge.len(), MAX_THUMBNAIL_TILES);
+    }
+
+    #[test]
+    fn head_and_tail_thumbnails_need_room_for_two_frames() {
+        let dur = Tick(4 * S.0);
+        assert_eq!(thumbnail_tiles(ThumbnailMode::Head, 100.0, 500.0, 80.0, (0.0, 800.0), dur, FRAME), [(100.0, Tick::ZERO)]);
+        assert_eq!(thumbnail_tiles(ThumbnailMode::HeadAndTail, 100.0, 500.0, 80.0, (0.0, 800.0), dur, FRAME), [(100.0, Tick::ZERO), (420.0, dur - FRAME)]);
+        // narrower than two tiles: the head only, as in Continuous narrower than one tile
+        assert_eq!(thumbnail_tiles(ThumbnailMode::HeadAndTail, 100.0, 250.0, 80.0, (0.0, 800.0), dur, FRAME), [(100.0, Tick::ZERO)]);
+        assert_eq!(thumbnail_tiles(ThumbnailMode::Continuous, 100.0, 150.0, 80.0, (0.0, 800.0), dur, FRAME), [(100.0, Tick::ZERO)]);
+        // off screen or degenerate: nothing
+        assert!(thumbnail_tiles(ThumbnailMode::Head, 900.0, 1300.0, 80.0, (0.0, 800.0), dur, FRAME).is_empty());
+        assert!(thumbnail_tiles(ThumbnailMode::Continuous, 0.0, 400.0, f32::NAN, (0.0, 800.0), dur, FRAME).is_empty());
+        assert!(thumbnail_tiles(ThumbnailMode::Continuous, 0.0, 0.0, 80.0, (0.0, 800.0), dur, FRAME).is_empty());
     }
 }
