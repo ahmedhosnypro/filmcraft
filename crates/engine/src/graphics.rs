@@ -264,7 +264,15 @@ fn apply_props(e: &mut EffectInstance, props: &serde_json::Map<String, Value>, m
 /// Set properties `props` on a layer (keyframe-aware at time `tl`). Changing the text keeps
 /// per-character styles on their characters. `merge` folds consecutive calls with the same key
 /// into one undo step (a drag is one undoable change, like `effects.setParam`).
-pub(crate) fn set_props(s: &mut Session, clip: ClipId, eidx: usize, props: &serde_json::Map<String, Value>, tl: Tick, label: &str, merge: Option<&str>) -> Result<()> {
+pub(crate) fn set_props(
+    s: &mut Session,
+    clip: ClipId,
+    eidx: usize,
+    props: &serde_json::Map<String, Value>,
+    tl: Tick,
+    label: &str,
+    merge: Option<&str>,
+) -> Result<()> {
     let props = props.clone();
     s.edit_sequence_as(label, merge, |q, _, _| {
         let (_, it) = q.find_item_mut(clip).ok_or(filmcraft_edit::EditError::NoItem(clip))?;

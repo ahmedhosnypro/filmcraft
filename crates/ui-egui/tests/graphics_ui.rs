@@ -153,6 +153,13 @@ fn type_tool_edit_style_and_move() {
     d.shot("shape-layer");
 }
 
+/// The value of `param` on the text layer of graphic clip `clip`, at its first frame.
+fn text_param(d: &mut Driver, clip: u64, param: &str) -> Option<filmcraft_project::ParamValue> {
+    let s = &d.harness.state().session;
+    let (_, it) = s.active_sequence()?.find_item(filmcraft_project::ClipId(clip))?;
+    let e = it.effects.iter().find(|e| e.effect == "graphic_text")?;
+    Some(e.param(param)?.value_at(filmcraft_time::Tick::ZERO))
+}
 
 /// A drag of a property in the Properties panel is one undo step, so one Cmd+Z restores the
 /// original value (a drag was committing one undo step per frame, so undo only stepped back one
@@ -168,13 +175,7 @@ fn a_property_drag_is_one_undo_step() {
     // the layer's Opacity number (visible in the Align and Transform section)
     d.exec("graphics.set", json!({"clip": clip, "layer": 0, "props": {"opacity": 50}}));
     d.frames(2);
-    let opacity = |d: &mut Driver| -> f64 {
-        let seq = d.exec("sequence.inspect", json!({}));
-        let item = seq["video"].as_array().unwrap().iter().flat_map(|t| t["items"].as_array().unwrap().iter()).find(|i| i["clip"].as_u64() == Some(clip)).unwrap();
-        let e = item["effects"].as_array().unwrap().iter().find(|e| e["effect"] == "graphic_text").unwrap();
-        let v = e["params"]["opacity"]["value"].as_str().unwrap();
-        v.trim_start_matches("Float(").trim_end_matches(')').parse::<f64>().unwrap()
-    };
+    let opacity = |d: &mut Driver| -> f64 { text_param(d, clip, "opacity").and_then(|v| v.as_f64()).unwrap() };
     let before = opacity(&mut d);
     let undo0 = d.exec("history.list", json!({}))["undo"].as_array().unwrap().len();
     // drag the Opacity number to the left: several move frames, one undo step
@@ -190,8 +191,6 @@ fn a_property_drag_is_one_undo_step() {
     assert_eq!(opacity(&mut d), before, "one undo restores the original value");
 }
 
-
-
 /// The shadow color picker popup: a drag in the 2D picker is one undo step, so one Cmd+Z
 /// restores the original color (a drag was committing one undo step per frame, so undo only
 /// stepped back one frame's worth — the reported "sometimes undo works, sometimes not").
@@ -203,12 +202,7 @@ fn shadow_color_drag_is_one_undo_step() {
     let clip = r["clip"].as_u64().unwrap();
     d.exec("graphics.selectLayer", json!({"clip": clip, "layers": [0]}));
     d.frames(4);
-    let color = |d: &mut Driver| -> String {
-        let seq = d.exec("sequence.inspect", json!({}));
-        let item = seq["video"].as_array().unwrap().iter().flat_map(|t| t["items"].as_array().unwrap().iter()).find(|i| i["clip"].as_u64() == Some(clip)).unwrap();
-        let e = item["effects"].as_array().unwrap().iter().find(|e| e["effect"] == "graphic_text").unwrap();
-        e["params"].get("shadow_color").and_then(|p| p["value"].as_str()).unwrap_or("Color([0.0, 0.0, 0.0, 1.0])").to_string()
-    };
+    let color = |d: &mut Driver| text_param(d, clip, "shadow_color").and_then(|v| v.as_color());
     // scroll the properties panel so the shadow row is visible, then open the picker
     d.ok("ui.scroll", json!({"x": 1400.0, "y": 500.0, "dx": 0.0, "dy": -400.0}));
     d.frames(3);
