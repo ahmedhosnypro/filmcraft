@@ -2214,6 +2214,21 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
             }
         }
     }
+    // preview of OS files being dragged over the Timeline: a placeholder where the drop would start
+    if let Some((count, p)) = app.file_drag_hover
+        && layout.content.contains(p)
+    {
+        let row = layout.row_at(p.y).cloned().or_else(|| layout.rows.iter().find(|r| r.kind == TrackKind::Video).cloned());
+        if let Some(row) = row {
+            let t = snap(app, seq, layout, rate.snap_nearest(layout.tick_at(p.x).max(Tick::ZERO)), &[]);
+            let x = layout.x_of(t);
+            let r = Rect::from_min_max(pos2(x, row.rect.min.y + 1.0), pos2((x + 120.0).min(layout.content.max.x), row.rect.max.y - 1.0));
+            ui.painter().rect_filled(r, 3.0, Color32::from_white_alpha(40));
+            ui.painter().rect_stroke(r, 3.0, Stroke::new(1.5, Color32::WHITE), StrokeKind::Inside);
+            let label = if count == 1 { tl!("1 file").to_string() } else { tlf!("{n} files", n = count) };
+            ui.painter().text(r.left_top() + vec2(4.0, 2.0), Align2::LEFT_TOP, label, Tokens::ui(10.0), Color32::WHITE);
+        }
+    }
     app.auto.add("timeline.tracks", layout.content, "tracks");
 }
 

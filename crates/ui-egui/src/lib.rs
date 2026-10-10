@@ -270,6 +270,8 @@ pub struct FilmcraftApp {
     timeline_view_of: Option<filmcraft_engine::project::ItemId>,
     /// Items imported by an OS file drop, to place on the Timeline at the drop point this frame.
     pending_timeline_drop: Option<(Vec<filmcraft_engine::project::ItemId>, egui::Pos2)>,
+    /// Files being dragged over the window from the OS (count, pointer): the Timeline previews where they would land.
+    file_drag_hover: Option<(usize, egui::Pos2)>,
     timeline_view_last: Option<filmcraft_engine::project::SequenceView>,
     pub fps: f32,
     last_time: f64,
@@ -458,6 +460,7 @@ impl FilmcraftApp {
             last_timeline_width: 1000.0,
             timeline_view_of: None,
             pending_timeline_drop: None,
+            file_drag_hover: None,
             timeline_view_last: None,
             fps: 60.0,
             last_time: 0.0,
@@ -1134,6 +1137,14 @@ impl FilmcraftApp {
     /// Import dropped files. With Timeline ▸ drop imports to the timeline, the new items are also
     /// queued to be placed at the pointer (see `timeline::interact`).
     fn handle_drops(&mut self, ctx: &egui::Context) {
+        // While files hover, the OS sends no cursor events: poll the cursor each frame to draw the Timeline preview.
+        let hovering = ctx.input(|i| i.raw.hovered_files.len());
+        self.file_drag_hover = if hovering > 0 && self.session.prefs.timeline.drop_import_to_timeline {
+            ctx.request_repaint();
+            self.drop_pointer(ctx).map(|p| (hovering, p))
+        } else {
+            None
+        };
         let dropped = ctx.input(|i| i.raw.dropped_files.clone());
         let mut paths = Vec::new();
         for f in dropped {
@@ -1143,14 +1154,7 @@ impl FilmcraftApp {
             }
         }
         if !paths.is_empty() {
-            // The OS reports no cursor motion while files are dragged in (winit, Windows): ask it where the drop landed.
-            let os_pointer = self
-                .hooks
-                .cursor_screen_position
-                .as_ref()
-                .and_then(|f| f())
-                .and_then(|px| ctx.input(|i| i.viewport().inner_rect.map(|r| screen_px_to_ui(px, i.pixels_per_point, r.min))));
-            let pointer = os_pointer.or_else(|| ctx.input(|i| i.pointer.hover_pos().or(i.pointer.latest_pos())));
+            let pointer = self.drop_pointer(ctx);
             let imported = self.session.execute("file.import", json!({"paths": paths, "bin": self.import_bin().0}));
             if let Ok(v) = imported
                 && let Some(pos) = pointer
@@ -1163,6 +1167,18 @@ impl FilmcraftApp {
                 }
             }
         }
+    }
+
+    /// Where files dragged in from the OS are over the window. The OS reports no cursor motion during such a drag
+    /// (winit, Windows), so ask it through the host hook, else use the last pointer position egui saw.
+    fn drop_pointer(&self, ctx: &egui::Context) -> Option<egui::Pos2> {
+        let os_pointer = self
+            .hooks
+            .cursor_screen_position
+            .as_ref()
+            .and_then(|f| f())
+            .and_then(|px| ctx.input(|i| i.viewport().inner_rect.map(|r| screen_px_to_ui(px, i.pixels_per_point, r.min))));
+        os_pointer.or_else(|| ctx.input(|i| i.pointer.hover_pos().or(i.pointer.latest_pos())))
     }
 
     // ---------------------------------------------------------------- input
