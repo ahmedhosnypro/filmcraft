@@ -28,6 +28,9 @@ mod args;
 mod audio;
 mod audio_in;
 mod control_server;
+#[cfg(target_os = "linux")]
+mod dev_icon;
+mod file_filters;
 #[cfg(any(target_os = "windows", test))]
 mod graphics;
 mod logging;
@@ -107,6 +110,8 @@ fn main() -> eframe::Result {
         }
     }
     app_nap::disable();
+    #[cfg(target_os = "linux")]
+    dev_icon::ensure_dev_desktop_entry();
     // Panics anywhere go to <data dir>/Logs/crash-<day>.log with a backtrace; the UI pass and
     // frame workers catch them and keep running (see filmcraft_ui_egui::crash).
     filmcraft_ui_egui::crash::install(log_dir);
@@ -200,7 +205,7 @@ fn main() -> eframe::Result {
             app.audio = Some(Box::new(audio::CpalOut::new()));
             app.hooks.pick_files = Some(Box::new(|exts: &[&str]| {
                 rfd::FileDialog::new()
-                    .add_filter(filmcraft_ui_egui::i18n::t("Media"), exts)
+                    .add_filter(filmcraft_ui_egui::i18n::t("Media"), &file_filters::extensions(exts))
                     .pick_files()
                     .unwrap_or_default()
                     .into_iter()
@@ -209,18 +214,21 @@ fn main() -> eframe::Result {
             }));
             // Link Media ▸ Locate…, Attach Proxies, Reconnect Full Resolution: one path, not imported.
             app.hooks.pick_file_for_relink = Some(Box::new(|exts: &[&str], _hint| {
-                rfd::FileDialog::new().add_filter(filmcraft_ui_egui::i18n::t("Media"), exts).pick_file().map(|p| p.to_string_lossy().to_string())
+                rfd::FileDialog::new()
+                    .add_filter(filmcraft_ui_egui::i18n::t("Media"), &file_filters::extensions(exts))
+                    .pick_file()
+                    .map(|p| p.to_string_lossy().to_string())
             }));
             app.hooks.pick_save = Some(Box::new(|name: &str| {
                 rfd::FileDialog::new()
-                    .add_filter(filmcraft_ui_egui::i18n::t("FilmCraft Project"), &["fcproj"])
+                    .add_filter(filmcraft_ui_egui::i18n::t("FilmCraft Project"), &file_filters::extensions(&["fcproj"]))
                     .set_file_name(name)
                     .save_file()
                     .map(|p| p.to_string_lossy().to_string())
             }));
             app.hooks.pick_save_as = Some(Box::new(|filter: &str, exts: &[&str], name: &str| {
                 rfd::FileDialog::new()
-                    .add_filter(filmcraft_ui_egui::i18n::t(filter), exts)
+                    .add_filter(filmcraft_ui_egui::i18n::t(filter), &file_filters::extensions(exts))
                     .set_file_name(name)
                     .save_file()
                     .map(|p| p.to_string_lossy().to_string())
@@ -230,6 +238,7 @@ fn main() -> eframe::Result {
                 Some(Box::new(|dir: &str| rfd::FileDialog::new().set_directory(dir).pick_folder().map(|p| p.to_string_lossy().into_owned())));
             app.hooks.open_path = Some(Box::new(open_path));
             // Settings ▸ General ▸ Interface Language ▸ System Language (#218).
+            app.hooks.cursor_screen_position = Some(Box::new(filmcraft_platform::cursor::cursor_screen_position));
             app.hooks.system_languages = Some(Box::new(|| sys_locale::get_locales().collect()));
             // Settings ▸ Appearance ▸ Appearance Mode ▸ Sync with system on Linux desktops whose
             // compositor reports no theme to winit (no polling: see appearance.rs).
@@ -238,11 +247,14 @@ fn main() -> eframe::Result {
                 window_raise::raise_without_focus();
             }));
             app.hooks.pick_open_file = Some(Box::new(|filter: &str, exts: &[&str]| {
-                rfd::FileDialog::new().add_filter(filmcraft_ui_egui::i18n::t(filter), exts).pick_file().map(|p| p.to_string_lossy().to_string())
+                rfd::FileDialog::new()
+                    .add_filter(filmcraft_ui_egui::i18n::t(filter), &file_filters::extensions(exts))
+                    .pick_file()
+                    .map(|p| p.to_string_lossy().to_string())
             }));
             app.hooks.pick_open_project = Some(Box::new(|| {
                 rfd::FileDialog::new()
-                    .add_filter(filmcraft_ui_egui::i18n::t("FilmCraft Project"), &["fcproj"])
+                    .add_filter(filmcraft_ui_egui::i18n::t("FilmCraft Project"), &file_filters::extensions(&["fcproj"]))
                     .pick_file()
                     .map(|p| p.to_string_lossy().to_string())
             }));

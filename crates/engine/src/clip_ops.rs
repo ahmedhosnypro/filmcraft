@@ -949,6 +949,7 @@ fn consolidate_duplicates(s: &mut Session, _: &Value) -> Result<Value> {
         for it in pr.items.values_mut() {
             match &mut it.kind {
                 ItemKind::Sequence(q) => {
+                    let q = std::sync::Arc::make_mut(q);
                     for t in q.all_tracks_mut() {
                         for i in &mut t.items {
                             if let Some(k) = map.get(&i.item) {
