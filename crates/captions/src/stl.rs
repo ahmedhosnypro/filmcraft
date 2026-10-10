@@ -221,7 +221,7 @@ fn encode_text(text: &str) -> Vec<u8> {
             let name = tag.strip_prefix('/').unwrap_or(tag);
             let is_tag = name.as_bytes().first().is_some_and(u8::is_ascii_alphabetic);
             if is_tag {
-                match tag.to_ascii_lowercase().as_str() {
+                match tag.trim().to_ascii_lowercase().as_str() {
                     "i" => out.push(0x80),
                     "/i" => out.push(0x81),
                     "u" => out.push(0x82),
