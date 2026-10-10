@@ -368,6 +368,19 @@ pub struct Eyedropper {
     pub mask: Option<usize>,
 }
 
+/// A keyframe selected in the Effect Controls keyframe lane: clip, effect index, parameter (of an
+/// effect mask when `mask` is set) and the keyframe's media time. The panel drops references that
+/// no longer match a keyframe (deleted, moved, another clip selected).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeyframeRef {
+    pub clip: u64,
+    pub effect: usize,
+    pub param: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mask: Option<usize>,
+    pub time: filmcraft_time::Tick,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UiState {
     #[serde(default)]
@@ -408,6 +421,9 @@ pub struct UiState {
     /// monitor (Esc or a click elsewhere disarms it). Never saved.
     #[serde(skip)]
     pub eyedropper: Option<Eyedropper>,
+    /// Effect Controls: the selected keyframes, highlighted in the keyframe lane (a click selects one).
+    #[serde(default)]
+    pub keyframe_selection: Vec<KeyframeRef>,
     /// Essential Sound sub-tab: "Edit" or "Browse".
     #[serde(default)]
     pub essential_sound_tab: String,
@@ -904,6 +920,7 @@ impl Default for UiState {
             show_scopes: false,
             status: String::new(),
             eyedropper: None,
+            keyframe_selection: Vec::new(),
             essential_sound_tab: "Edit".into(),
             tts: Default::default(),
             export: Default::default(),
