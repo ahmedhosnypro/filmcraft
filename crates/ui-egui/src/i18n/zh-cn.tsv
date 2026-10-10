@@ -1246,6 +1246,9 @@
 	Active Monitor	活动监视器
 	Add	添加
 	Add tracks automatically when editing source clips onto the Timeline	将源剪辑编辑到时间轴时自动添加轨道
+	Place files dropped onto the Timeline directly on the Timeline	将拖放到时间轴上的文件直接放置在时间轴上
+	1 file	1 个文件
+	{n} files	{n} 个文件
 	Additional Scale	附加缩放
 	Additive Dissolve	添加式溶解
 	Additive Dissolve (Legacy)	添加式溶解（旧版）
@@ -3487,3 +3490,5 @@
 	Sync with system	跟随系统
 	Text to Speech	文字转语音
 	Edit Narration	编辑旁白
+	Clear Transition	清除过渡
+	Set Transition Duration	设置过渡持续时间

@@ -264,7 +264,9 @@ impl MediaClip {
 #[allow(clippy::large_enum_variant)]
 pub enum ItemKind {
     Media(MediaClip),
-    Sequence(Box<Sequence>),
+    /// Shared so project snapshots used by undo and background readers do not deep-copy every
+    /// timeline. Mutators detach with `Arc::make_mut`.
+    Sequence(std::sync::Arc<Sequence>),
     /// A subclip: a media item restricted to a range.
     Subclip {
         parent: ItemId,
@@ -329,7 +331,7 @@ impl ProjectItem {
     }
     pub fn as_sequence_mut(&mut self) -> Option<&mut Sequence> {
         match &mut self.kind {
-            ItemKind::Sequence(s) => Some(s),
+            ItemKind::Sequence(s) => Some(std::sync::Arc::make_mut(s)),
             _ => None,
         }
     }
@@ -1509,7 +1511,7 @@ impl Project {
             let id = TrackId(self.alloc_id());
             seq.audio_tracks.push(Track::new(id, TrackKind::Audio, format!("Audio {}", i + 1)));
         }
-        self.add_item(name, Label::Forest, ItemKind::Sequence(Box::new(seq)), bin)
+        self.add_item(name, Label::Forest, ItemKind::Sequence(std::sync::Arc::new(seq)), bin)
     }
 
     /// Re-base an item's media time: whatever was at media time `t` is at `t - delta` afterwards
@@ -1531,6 +1533,7 @@ impl Project {
         }
         for it in self.items.values_mut() {
             if let ItemKind::Sequence(seq) = &mut it.kind {
+                let seq = std::sync::Arc::make_mut(seq);
                 for t in seq.all_tracks_mut() {
                     for ti in t.items.iter_mut().filter(|ti| users.contains(&ti.item)) {
                         ti.source_in -= delta;
@@ -1989,6 +1992,30 @@ mod tests {
         assert_eq!(p.root.parent_of(i), Some(b));
         assert!(p.root.remove_item(i));
         assert_eq!(p.root.parent_of(i), None);
+    }
+
+    #[test]
+    fn project_clone_shares_sequences_until_mutated() {
+        fn sequence_arc(p: &Project, id: ItemId) -> &std::sync::Arc<Sequence> {
+            match &p.item(id).unwrap().kind {
+                ItemKind::Sequence(q) => q,
+                _ => unreachable!(),
+            }
+        }
+
+        let (mut p, _, a) = demo_project();
+        let b = p.new_sequence("Sequence 02", SequenceSettings::default(), 1, 1, None);
+        let before = p.clone();
+
+        assert!(std::sync::Arc::ptr_eq(sequence_arc(&p, a), sequence_arc(&before, a)));
+        assert!(std::sync::Arc::ptr_eq(sequence_arc(&p, b), sequence_arc(&before, b)));
+
+        p.sequence_mut(a).unwrap().mark_in = Some(Tick(1));
+
+        assert!(!std::sync::Arc::ptr_eq(sequence_arc(&p, a), sequence_arc(&before, a)));
+        assert!(std::sync::Arc::ptr_eq(sequence_arc(&p, b), sequence_arc(&before, b)));
+        assert_eq!(before.sequence(a).unwrap().mark_in, None);
+        assert_eq!(Project::from_json(&p.to_json()).unwrap(), p);
     }
 
     #[test]
