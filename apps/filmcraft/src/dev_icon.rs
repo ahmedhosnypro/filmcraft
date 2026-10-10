@@ -6,17 +6,17 @@
 //! (`packaging/linux/ai.storyteller.filmcraft.desktop` and the hicolor PNGs) — but a source-tree
 //! run has neither, so KDE/GNOME fall back to the generic Wayland icon. The fix is to ensure a
 //! user-level entry for those runs: when no entry for the app id exists in any XDG data dir,
-//! install one (plus the hicolor icon PNGs, embedded so it works whatever the working directory
-//! is) into `$XDG_DATA_HOME`/`~/.local/share`. An existing packaged entry is never overridden;
-//! the user-owned dev copy is rewritten when it points at another binary (a dev build moves
-//! between checkouts). The shell picks the icon up at the *next* app start;
+//! install one (plus the hicolor icon PNGs, read from this checkout's `assets/app-icon`, so
+//! nothing is embedded in the binary) into `$XDG_DATA_HOME`/`~/.local/share`. An existing
+//! packaged entry is never overridden; the user-owned dev copy is rewritten when it points at
+//! another binary (a dev build moves between checkouts). The shell picks the icon up at the *next* app start;
 //! `update-desktop-database`/`kbuildsycoca` is not needed for icon lookup.
 //!
-//! Only source-tree runs install anything: a debug build, or a release build with
-//! `FILMCRAFT_DEV_DESKTOP_ENTRY` set (the docs' `cargo run --release` flow). Packaged runs are
-//! excluded — AppImage (`APPIMAGE`) mounts at a fresh `/tmp/.mount_*` each launch, so its
-//! `Exec` path changes every time and it ships its own entry, and a Flatpak (`FLATPAK_ID`)
-//! installs its entry through the manifest. `packaging/linux/install.sh` writes the packaged
+//! Opt-in only: nothing is written unless `FILMCRAFT_DEV_DESKTOP_ENTRY=1` is set, so ordinary
+//! `cargo run`s (agents, worktrees, CI) never touch the user's profile. Packaged runs are
+//! excluded even then — AppImage (`APPIMAGE`) mounts at a fresh `/tmp/.mount_*` each launch,
+//! so its `Exec` path changes every time and it ships its own entry, and a Flatpak
+//! (`FLATPAK_ID`) installs its entry through the manifest. `packaging/linux/install.sh` writes the packaged
 //! `Exec=` the same two-layer way as here; keep the two in sync.
 //!
 //! Every failure is logged and skipped — a missing dev icon must never stop the app
@@ -30,9 +30,10 @@ pub fn ensure_dev_desktop_entry() {
     if std::env::var_os("APPIMAGE").is_some() || std::env::var_os("FLATPAK_ID").is_some() {
         return;
     }
-    // Dev builds only: a debug build, or a release run opted in — a packaged release must not
-    // touch the profile (the packages and install.sh install the real entry).
-    if !cfg!(debug_assertions) && std::env::var_os("FILMCRAFT_DEV_DESKTOP_ENTRY").is_none() {
+    // Opt-in only: a plain `cargo run` (agents, worktrees, other checkouts) must not write into
+    // the user's profile, and a packaged release never does (packages and install.sh install
+    // the real entry).
+    if std::env::var_os("FILMCRAFT_DEV_DESKTOP_ENTRY").is_none_or(|v| v != "1") {
         return;
     }
     if let Err(e) = ensure() {
@@ -71,13 +72,20 @@ fn ensure() -> Result<(), DevIconError> {
         }
         break; // a dev entry from another checkout: fall through and rewrite it
     }
-    for (size, png) in ICONS {
-        let dest = user_dir.join("icons").join("hicolor").join(format!("{size}x{size}")).join("apps").join(format!("{}.png", crate::APP_ID));
+    for size in ICON_SIZES {
+        let rel = std::path::Path::new("hicolor").join(format!("{size}x{size}")).join("apps").join(format!("{}.png", crate::APP_ID));
+        let dest = user_dir.join("icons").join(&rel);
         if !dest.is_file()
             && let Some(parent) = dest.parent()
         {
+            // The checkout this binary was built from; a missing icon only costs the icon.
+            let src = std::path::Path::new(ICON_DIR).join(&rel);
+            if !src.is_file() {
+                log::warn!("dev desktop entry: icon {} not found; skipping it", src.display());
+                continue;
+            }
             std::fs::create_dir_all(parent).map_err(DevIconError::Io)?;
-            std::fs::write(&dest, png).map_err(DevIconError::Io)?;
+            std::fs::copy(&src, &dest).map_err(DevIconError::Io)?;
         }
     }
     let applications = user_dir.join("applications");
@@ -89,10 +97,11 @@ fn ensure() -> Result<(), DevIconError> {
 
 /// The hicolor icon sizes installed for the taskbar (a subset large enough for panel and topbar;
 /// the shell picks the nearest size, so 256 and 512 cover both).
-const ICONS: &[(u16, &[u8])] = &[
-    (256, include_bytes!("../../../assets/app-icon/hicolor/256x256/apps/ai.storyteller.filmcraft.png")),
-    (512, include_bytes!("../../../assets/app-icon/hicolor/512x512/apps/ai.storyteller.filmcraft.png")),
-];
+const ICON_SIZES: [u16; 2] = [256, 512];
+
+/// The app icons in the source tree this binary was built from (a path, not embedded bytes:
+/// the entry is a dev-checkout convenience and release binaries must not carry the PNGs).
+const ICON_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/app-icon");
 
 /// The user data dir we install into: `$XDG_DATA_HOME`, else `$HOME/.local/share` (XDG base
 /// directory spec). Untrusted environment: an empty or relative `XDG_DATA_HOME` means the
@@ -250,6 +259,15 @@ mod tests {
 
     /// The entry mirrors the packaged one, derived from the real file so the two cannot drift:
     /// minus `TryExec` (a dev build isn't on `$PATH`), plus the quoted dev `Exec` path.
+    /// The icons the entry installs exist in the checkout.
+    #[test]
+    fn icon_sources_exist_in_the_checkout() {
+        for size in ICON_SIZES {
+            let p = std::path::Path::new(ICON_DIR).join(format!("hicolor/{size}x{size}/apps/ai.storyteller.filmcraft.png"));
+            assert!(p.is_file(), "{}", p.display());
+        }
+    }
+
     #[test]
     fn desktop_file_matches_the_packaged_fields() {
         let packaged = include_str!("../../../packaging/linux/ai.storyteller.filmcraft.desktop");
