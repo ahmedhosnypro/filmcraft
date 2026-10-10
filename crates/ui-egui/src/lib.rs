@@ -1343,7 +1343,10 @@ impl FilmcraftApp {
         if self.session.trim_play.dynamic.is_some() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
             let _ = self.session.execute("trim.cancelDynamic", json!({}));
         }
-        // Panel shortcuts of the focused panel first: they override application shortcuts.
+        // Panel shortcuts of the focused panel override application shortcuts on the same chord.
+        // egui ignores extra Shift and Alt when matching, so the most specific chords go first
+        // across both scopes (the sort is stable, so the panel still wins a tie): otherwise the
+        // Timeline's `Delete` (Clear) swallows the app-wide `Shift+Delete` (Ripple Delete) (#680).
         let focused = self.ui.focused.title();
         let mut fire = Vec::new();
         ctx.input_mut(|i| {
@@ -1375,7 +1378,9 @@ impl FilmcraftApp {
             clipboard_events_as_keys(&mut i.events, modifiers);
             let panel = self.bindings.iter().filter(|b| b.3.as_deref() == Some(focused));
             let app_wide = self.bindings.iter().filter(|b| b.3.is_none());
-            for (m, k, id, _) in panel.chain(app_wide) {
+            let mut candidates: Vec<&menus::KeyBinding> = panel.chain(app_wide).collect();
+            candidates.sort_by_key(|b| std::cmp::Reverse(menus::specificity(b.0)));
+            for (m, k, id, _) in candidates {
                 if i.consume_key(*m, *k) {
                     fire.push(id.clone());
                 }
