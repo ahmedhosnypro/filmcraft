@@ -105,6 +105,8 @@ pub struct AudioDevices {
 #[derive(Default)]
 pub struct HostHooks {
     pub pick_files: Option<Box<dyn FnMut(&[&str]) -> Vec<String>>>,
+    /// The cursor in physical screen pixels. Where the windowing layer reports no pointer while files are dragged in from the OS (Windows), a drop is placed where this says it landed.
+    pub cursor_screen_position: Option<Box<dyn Fn() -> Option<(i32, i32)>>>,
     pub pick_save: Option<Box<dyn FnMut(&str) -> Option<String>>>,
     pub pick_open_project: Option<Box<dyn FnMut() -> Option<String>>>,
     /// Save dialog with a filter: (filter name, extensions, suggested file name) → path.
@@ -279,6 +281,10 @@ pub struct FilmcraftApp {
     /// The sequence whose view `ui.timeline` holds, and that view as it was last exchanged with
     /// `session.state.timeline_views` (see `sync_timeline_view`).
     timeline_view_of: Option<filmcraft_engine::project::ItemId>,
+    /// Items imported by an OS file drop, to place on the Timeline at the drop point this frame.
+    pending_timeline_drop: Option<(Vec<filmcraft_engine::project::ItemId>, egui::Pos2)>,
+    /// Files being dragged over the window from the OS (count, pointer): the Timeline previews where they would land.
+    file_drag_hover: Option<(usize, egui::Pos2)>,
     timeline_view_last: Option<filmcraft_engine::project::SequenceView>,
     pub fps: f32,
     last_time: f64,
@@ -467,6 +473,8 @@ impl FilmcraftApp {
             integrated_titlebar: false,
             last_timeline_width: 1000.0,
             timeline_view_of: None,
+            pending_timeline_drop: None,
+            file_drag_hover: None,
             timeline_view_last: None,
             fps: 60.0,
             last_time: 0.0,
@@ -1164,8 +1172,17 @@ impl FilmcraftApp {
         r
     }
 
-    /// Import dropped files.
+    /// Import dropped files. With Timeline ▸ drop imports to the timeline, the new items are also
+    /// queued to be placed at the pointer (see `timeline::interact`).
     fn handle_drops(&mut self, ctx: &egui::Context) {
+        // While files hover, the OS sends no cursor events: poll the cursor each frame to draw the Timeline preview.
+        let hovering = ctx.input(|i| i.raw.hovered_files.len());
+        self.file_drag_hover = if hovering > 0 && self.session.prefs.timeline.drop_import_to_timeline {
+            ctx.request_repaint();
+            self.drop_pointer(ctx).map(|p| (hovering, p))
+        } else {
+            None
+        };
         let dropped = ctx.input(|i| i.raw.dropped_files.clone());
         let mut paths = Vec::new();
         for f in dropped {
@@ -1175,8 +1192,31 @@ impl FilmcraftApp {
             }
         }
         if !paths.is_empty() {
-            let _ = self.session.execute("file.import", json!({"paths": paths, "bin": self.import_bin().0}));
+            let pointer = self.drop_pointer(ctx);
+            let imported = self.session.execute("file.import", json!({"paths": paths, "bin": self.import_bin().0}));
+            if let Ok(v) = imported
+                && let Some(pos) = pointer
+                && self.session.prefs.timeline.drop_import_to_timeline
+            {
+                let items: Vec<filmcraft_engine::project::ItemId> =
+                    v["items"].as_array().map(|a| a.iter().filter_map(|i| i.as_u64()).map(filmcraft_engine::project::ItemId).collect()).unwrap_or_default();
+                if !items.is_empty() {
+                    self.pending_timeline_drop = Some((items, pos));
+                }
+            }
         }
+    }
+
+    /// Where files dragged in from the OS are over the window. The OS reports no cursor motion during such a drag
+    /// (winit, Windows), so ask it through the host hook, else use the last pointer position egui saw.
+    fn drop_pointer(&self, ctx: &egui::Context) -> Option<egui::Pos2> {
+        let os_pointer = self
+            .hooks
+            .cursor_screen_position
+            .as_ref()
+            .and_then(|f| f())
+            .and_then(|px| ctx.input(|i| i.viewport().inner_rect.map(|r| screen_px_to_ui(px, i.pixels_per_point, r.min))));
+        os_pointer.or_else(|| ctx.input(|i| i.pointer.hover_pos().or(i.pointer.latest_pos())))
     }
 
     // ---------------------------------------------------------------- input
@@ -1405,6 +1445,8 @@ impl FilmcraftApp {
             state::Mode::Import => panels::import_mode::show(self, ui, body),
             state::Mode::Export => panels::export_mode::show(self, ui, body),
         }
+        // the Timeline has had its chance to place a file drop this frame; anything left stays a bin import
+        self.pending_timeline_drop = None;
         panels::dialogs::show(self, &ctx);
         if !self.ui.show_status_bar {
             // no bar to draw the job in, but a finished preview render still plays
@@ -1951,5 +1993,33 @@ mod audio_recovery_tests {
         assert_eq!(app.session.playhead(), displayed);
         assert!(app.ui.status.contains("Audio output failed"));
         app.stop();
+    }
+}
+
+/// A physical-pixel screen position as a point in the window's UI space, given the window's content origin in points.
+///
+/// Assumes the whole virtual screen uses the window's `pixels_per_point`: with monitors of mixed
+/// DPI the point can be off when the cursor and the window's origin are on different monitors.
+fn screen_px_to_ui(px: (i32, i32), pixels_per_point: f32, content_min: egui::Pos2) -> egui::Pos2 {
+    let ppp = if pixels_per_point.is_finite() && pixels_per_point > 0.0 { pixels_per_point } else { 1.0 };
+    egui::pos2(px.0 as f32 / ppp - content_min.x, px.1 as f32 / ppp - content_min.y)
+}
+
+#[cfg(test)]
+mod screen_px_tests {
+    use super::screen_px_to_ui;
+
+    #[test]
+    fn maps_screen_pixels_into_the_window() {
+        let p = screen_px_to_ui((1300, 900), 2.0, egui::pos2(100.0, 50.0));
+        assert_eq!((p.x, p.y), (550.0, 400.0));
+    }
+
+    #[test]
+    fn a_hostile_scale_does_not_divide_by_zero() {
+        for ppp in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+            let p = screen_px_to_ui((10, 20), ppp, egui::pos2(0.0, 0.0));
+            assert!(p.x.is_finite() && p.y.is_finite());
+        }
     }
 }

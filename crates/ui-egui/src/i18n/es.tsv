@@ -1253,6 +1253,9 @@
 	Active Monitor	Monitor activo
 	Add	Añadir
 	Add tracks automatically when editing source clips onto the Timeline	Añadir pistas automáticamente al editar clips de origen en la línea de tiempo
+	Place files dropped onto the Timeline directly on the Timeline	Colocar los archivos soltados en la línea de tiempo directamente en ella
+	1 file	1 archivo
+	{n} files	{n} archivos
 	Additional Scale	Escala adicional
 	Additive Dissolve	Disolución aditiva
 	Additive Dissolve (Legacy)	Disolución aditiva (heredada)
