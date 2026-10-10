@@ -246,3 +246,16 @@ fn damaged_timecode_fields_are_not_published() {
     let src = filmcraft_codecs::open_bytes("bad.mp4", Arc::from(file.into_boxed_slice())).unwrap();
     assert_eq!(src.info().start_timecode, None);
 }
+
+#[test]
+fn drop_frame_skipped_labels_are_not_published() {
+    // 00:01:00;00 at 59.94 fps: frames 00-03 of a non-tenth minute don't exist in drop-frame
+    // counting, so this metadata is unusable rather than a start time.
+    let file = file_with_rtmd(&rtmd_sample(0, 1, 0, 0, 1));
+    let src = filmcraft_codecs::open_bytes("df_bad.mp4", Arc::from(file.into_boxed_slice())).unwrap();
+    assert_eq!(src.info().start_timecode, None);
+    // The first real label of that minute (frame 04) is accepted.
+    let file = file_with_rtmd(&rtmd_sample(0, 1, 0, 4, 1));
+    let src = filmcraft_codecs::open_bytes("df_ok.mp4", Arc::from(file.into_boxed_slice())).unwrap();
+    assert_eq!(src.info().start_timecode, Some(3600));
+}
