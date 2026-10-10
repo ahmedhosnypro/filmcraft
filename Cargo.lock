@@ -1829,6 +1829,7 @@ dependencies = [
  "filmcraft-vp9",
  "image",
  "log",
+ "rayon",
  "serde_json",
  "symphonia",
  "thiserror 2.0.21",
