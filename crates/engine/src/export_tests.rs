@@ -65,6 +65,21 @@ fn export_integer_parameters_cannot_wrap_or_overflow() {
 }
 
 #[test]
+fn wav_resolve_honours_explicit_sample_rates() {
+    let mut s = demo();
+    for rate in [4000, 192_000, 192_001, 200_000, 352_800, 384_000] {
+        let result = s.execute("export.resolve", json!({"format":"wav", "settings":{"audio":{"sample_rate":rate}}})).unwrap();
+        assert_eq!(result["settings"]["audio"]["sample_rate"], rate);
+        assert_eq!(result["output"]["sampleRate"], rate);
+    }
+    let result = s.execute("export.resolve", json!({"format":"wav", "settings":{"audio":{"sample_rate":null}}})).unwrap();
+    assert_eq!(result["output"]["sampleRate"], 48_000);
+    for rate in [0, 384_001] {
+        assert!(s.execute("export.resolve", json!({"format":"wav", "settings":{"audio":{"sample_rate":rate}}})).is_err());
+    }
+}
+
+#[test]
 fn nested_camel_case_settings_are_honoured() {
     let mut s = demo();
     let camel = json!({"audio":{"sampleRate":96000}, "effects":{"loudness":{"enabled":true, "targetLufs":-16}}});
