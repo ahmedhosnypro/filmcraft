@@ -46,6 +46,11 @@ fn selected_clip(app: &FilmcraftApp) -> Option<(ClipId, TrackItem, filmcraft_pro
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let Some((clip, it, kind)) = selected_clip(app) else {
+        // a transition clicked in the Timeline (#430)
+        if let Some(id) = crate::panels::transition_controls::selected(app) {
+            crate::panels::transition_controls::effect_controls(app, ui, rect, id);
+            return;
+        }
         crate::dock::placeholder(ui, rect, &t, tl!("(no clip selected)"));
         return;
     };

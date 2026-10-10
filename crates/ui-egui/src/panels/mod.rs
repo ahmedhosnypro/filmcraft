@@ -47,6 +47,7 @@ pub mod timeline_automation;
 pub mod timeline_captions;
 pub mod timeline_hit;
 pub mod tools;
+pub mod transition_controls;
 pub mod trim_monitor;
 pub mod voiceover;
 pub mod workspaces;

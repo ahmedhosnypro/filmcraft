@@ -162,6 +162,8 @@ pub enum Dialog {
     AddTracks,
     /// Sequence ▸ Sequence Settings….
     SequenceSettings,
+    /// Set Transition Duration (double-click a transition in the Timeline).
+    TransitionDuration,
 }
 
 #[derive(Default)]
