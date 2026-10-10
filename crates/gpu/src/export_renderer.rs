@@ -72,6 +72,22 @@ pub mod timing {
     }
 }
 
+/// Set once the shared export device reported an uncaptured error (validation, out of memory)
+/// or was lost: every export renders on the CPU from then on. The device is shared by every
+/// renderer and lives in a `OnceLock`, so it is not recreated in this process.
+static DEVICE_FAILED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Retire the shared export device, logging the first reason only.
+fn mark_device_failed(why: &str) {
+    if !DEVICE_FAILED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        log::error!("GPU export disabled for this session ({why}); exports render on the CPU");
+    }
+}
+
+fn device_failed() -> bool {
+    DEVICE_FAILED.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 pub struct ExportRenderer {
     _instance: wgpu::Instance,
     #[expect(dead_code, reason = "kept for future frame-accuracy flows (readback fences)")]
@@ -91,10 +107,17 @@ impl ExportRenderer {
                 let instance = wgpu::Instance::default();
                 let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
                 let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()?;
+                // wgpu's default handler panics on a validation or out-of-memory error; log it and
+                // send the remaining frames to the CPU instead.
+                device.on_uncaptured_error(std::sync::Arc::new(|e: wgpu::Error| mark_device_failed(&format!("GPU error: {e}"))));
+                device.set_device_lost_callback(|reason, msg| mark_device_failed(&format!("GPU device lost ({reason:?}): {msg}")));
                 Some((instance, device, queue))
             })
             .as_ref()?
             .clone();
+        if device_failed() {
+            return None;
+        }
         let compositor = GpuCompositor::new(&device, &queue);
         Some(Self { _instance: instance, device, queue, compositor })
     }
@@ -107,11 +130,20 @@ impl ExportRenderer {
             // Already the CPU image: return it unchanged instead of rendering it twice.
             FramePlan::Image(img) => Some(img.clone()),
             FramePlan::Layers { .. } => {
+                if device_failed() {
+                    return None;
+                }
                 let prep = prepare(&plan);
                 let (w, h, px) = self.compositor.render_export_prepared(&plan, Some(&prep))?;
+                // an error reported while this frame was drawn leaves its pixels untrusted
+                if device_failed() {
+                    return None;
+                }
                 timing::add_frame();
                 Some(Image { w: w as usize, h: h as usize, px })
             }
+            // Transitions: the export path leaves them to the CPU reference renderer.
+            FramePlan::Composite { .. } => None,
         }
     }
 }

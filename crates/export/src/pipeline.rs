@@ -12,7 +12,7 @@ use filmcraft_time::FrameRate;
 use rayon::prelude::*;
 
 use crate::settings::{ExportEffects, Placement, Scaling, TextOverlay};
-use crate::{ExportError, ExportSettings, FrameRenderer, GpuRendering, Result, build_frame_renderer, note_gpu_fallback, note_gpu_frame};
+use crate::{ExportError, ExportSettings, Format, FrameRenderer, GpuRendering, Result, build_frame_renderer, note_gpu_fallback, note_gpu_frame};
 
 /// Where the rendered picture lands in the output frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -54,28 +54,53 @@ impl Geometry {
 struct RendererPool {
     renderers: std::sync::Mutex<Vec<Box<dyn FrameRenderer>>>,
     available: std::sync::Condvar,
+    /// A renderer panicked: the pool is retired and the rest of the export renders on the CPU.
+    failed: std::sync::atomic::AtomicBool,
 }
 
 impl RendererPool {
     /// `None` for an empty list (a pool nobody could take from).
     fn new(renderers: Vec<Box<dyn FrameRenderer>>) -> Option<Self> {
-        (!renderers.is_empty()).then(|| Self { renderers: std::sync::Mutex::new(renderers), available: std::sync::Condvar::new() })
+        (!renderers.is_empty()).then(|| Self {
+            renderers: std::sync::Mutex::new(renderers),
+            available: std::sync::Condvar::new(),
+            failed: std::sync::atomic::AtomicBool::new(false),
+        })
     }
 
-    /// Run `f` with a free renderer, waiting for one if all are busy.
+    /// Run `f` with a free renderer, waiting for one if all are busy. `None` once a renderer has
+    /// panicked: the panicking renderer is dropped (its state can't be trusted) and so are the
+    /// others as they come back, so the caller falls back to the CPU for the rest of the export.
     fn with<R>(&self, f: impl FnOnce(&mut dyn FrameRenderer) -> R) -> Option<R> {
+        use std::sync::atomic::Ordering;
         let mut free = self.renderers.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut r = loop {
+            if self.failed.load(Ordering::SeqCst) {
+                return None;
+            }
             match free.pop() {
                 Some(r) => break r,
                 None => free = self.available.wait(free).unwrap_or_else(std::sync::PoisonError::into_inner),
             }
         };
         drop(free);
-        // the renderer goes back even when `f` panics (the export worker runs under catch_unwind)
         let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(&mut *r)));
-        self.renderers.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(r);
-        self.available.notify_one();
+        let mut free = self.renderers.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if res.is_err() {
+            // (the panic hook has logged the panic itself)
+            self.failed.store(true, Ordering::SeqCst);
+            free.clear();
+            drop(free);
+            drop(r);
+        } else if self.failed.load(Ordering::SeqCst) {
+            drop(free);
+            drop(r);
+        } else {
+            free.push(r);
+            drop(free);
+        }
+        // waiters re-check `failed` (or take the renderer that came back)
+        self.available.notify_all();
         res.ok()
     }
 }
@@ -95,11 +120,29 @@ pub(crate) struct Pipeline {
     geom: Geometry,
     opts: RenderOptions,
     pub hdr_out: bool,
+    /// Keep straight alpha in the RGBA8 output instead of flattening over black.
+    alpha: bool,
     out_tf: Option<filmcraft_color::OutputTransform>,
     effects: ExportEffects,
     overlay: Option<Image>,
     start_tc: i64,
     drop_frame: bool,
+    /// Free the pool's float images when the export ends: a standalone export, not one part of a
+    /// batch (`ExportSettings::part_of_batch`).
+    trim_pool: bool,
+}
+
+impl Drop for Pipeline {
+    /// The export is over, however it ended (done, failed, cancelled, dropped half way). The float
+    /// images its frames left on the `filmcraft_frame::pool` float shelf are the size of its
+    /// frames, which nothing else asks for, so free them instead of holding up to 320 MiB idle. A
+    /// job still rendering at that moment allocates a few images again; the pool is only a cache.
+    /// Parts of a larger job (render-preview segments, proxies) keep them for the next part.
+    fn drop(&mut self) {
+        if self.trim_pool {
+            filmcraft_frame::pool::trim_f32();
+        }
+    }
 }
 
 impl Pipeline {
@@ -149,6 +192,7 @@ impl Pipeline {
             seq_rate: q.settings.frame_rate,
             start_tc: q.start_timecode,
             drop_frame: q.settings.drop_frame,
+            trim_pool: !settings.part_of_batch,
             project: project.clone(),
             seq,
             rate: r.rate,
@@ -157,6 +201,7 @@ impl Pipeline {
             geom,
             opts,
             hdr_out,
+            alpha: settings.alpha && matches!(settings.format, Format::PngSequence | Format::TiffSequence),
             out_tf,
             effects,
             overlay,
@@ -171,7 +216,7 @@ impl Pipeline {
         // draw, any internal error) falls back to the CPU reference renderer below.
         let gpu = match self.renderer.as_ref() {
             Some(pool) => {
-                let asked = std::time::Instant::now();
+                let asked = web_time::Instant::now();
                 pool.with(|r| {
                     crate::note_lock_wait(asked.elapsed());
                     r.render(&self.project, self.seq, t, self.opts, sources)
@@ -209,7 +254,7 @@ impl Pipeline {
             filmcraft_frame::pool::recycle_f32(img.px);
             return (Vec::new(), out);
         }
-        let mut rgba = img.over_black_rgba8();
+        let mut rgba = if self.alpha { img.to_rgba8() } else { img.over_black_rgba8() };
         // the float image is not needed any more: its buffer serves the next frame's layers
         filmcraft_frame::pool::recycle_f32(img.px);
         if lim.enabled {

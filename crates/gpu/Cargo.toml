@@ -27,5 +27,4 @@ filmcraft-export = { workspace = true }
 image = { version = "0.25", default-features = false, features = ["png"] }
 wgpu = { version = "30", features = ["wgsl", "metal", "vulkan", "dx12", "gles"] }
 filmcraft-media = { workspace = true }
-filmcraft-project = { workspace = true }
 filmcraft-time = { workspace = true }

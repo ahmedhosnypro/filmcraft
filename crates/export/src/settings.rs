@@ -78,15 +78,16 @@ pub enum HardwareEncoding {
 /// Whether the picture of an export may be composited on the GPU (`filmcraft-gpu`'s off-screen
 /// compositor) instead of the CPU reference renderer. Auto = use the GPU when the app registered
 /// a GPU frame renderer and the machine has an adapter; the CPU result is the fallback either
-/// way. Auto is the default: on an effects-heavy edit it exports 2.4× (1080p) to 3.2× (4K)
-/// faster, and a single plain clip takes the same time (`docs/performance.md`). The GPU matches
-/// the CPU within the compositor's parity tolerance, not bit for bit, so an export's bytes can
-/// depend on the machine's GPU. Off = the CPU reference renderer, byte-reproducible everywhere.
+/// way. On an effects-heavy edit it exports 2.4× (1080p) to 3.2× (4K) faster, and a single plain
+/// clip takes the same time (`docs/performance.md`). The GPU matches the CPU within the
+/// compositor's parity tolerance, not bit for bit, so an export's bytes can depend on the
+/// machine's GPU. Off = the CPU reference renderer, byte-reproducible everywhere; Off is the
+/// default (opt-in per export) until GPU export has been measured on Windows and macOS.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum GpuRendering {
-    #[default]
     Auto,
+    #[default]
     Off,
 }
 
@@ -524,7 +525,9 @@ impl ExportSettings {
                     v += &format!(", keyframe every {} frames", r.keyint);
                 }
                 Format::Hevc => {
-                    v += &format!(", HEVC Main (hardware encoder), {}", self.bitrate_mode.label());
+                    // Main 10 only where a registered encoder writes HDR (NVENC); VideoToolbox is 8-bit
+                    let profile = if crate::hdr_available(Format::Hevc) { "HEVC Main / Main 10 for HDR" } else { "HEVC Main" };
+                    v += &format!(", {profile} (hardware encoder), {}", self.bitrate_mode.label());
                     v += &match self.bitrate_mode {
                         BitrateMode::Cbr => format!(", {}", mbps(r.target_kbps)),
                         _ => format!(", Target {}, Max {}", mbps(r.target_kbps), mbps(r.max_kbps)),
