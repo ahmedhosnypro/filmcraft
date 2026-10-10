@@ -7,6 +7,11 @@
 #   flatpak-builder --user --install --force-clean build-flatpak packaging/linux/flatpak/ai.storyteller.filmcraft.yml
 #   flatpak run ai.storyteller.filmcraft
 #
+# The command-line tool and its MCP server run in the same sandbox, without opening a window:
+#
+#   flatpak run --command=filmcraft-cli ai.storyteller.filmcraft --version
+#   flatpak run --command=filmcraft-cli ai.storyteller.filmcraft mcp
+#
 # For Flathub, replace the `dir` source with a `git` source pinned to a release tag and commit.
 id: ai.storyteller.filmcraft
 runtime: org.freedesktop.Platform
@@ -16,10 +21,15 @@ sdk-extensions:
   - org.freedesktop.Sdk.Extension.rust-stable
 command: filmcraft
 finish-args:
+  # X11 shared memory (MIT-SHM). Without it the X11 fallback is slow or fails.
   - --share=ipc
+  # Display: Wayland first; X11 only when no Wayland compositor is running.
   - --socket=wayland
   - --socket=fallback-x11
+  # Audio playback and the mixer's meters (cpal over ALSA, which the runtime routes to the
+  # host's PulseAudio or PipeWire server).
   - --socket=pulseaudio
+  # GPU access for the wgpu compositor, scopes and effects (Vulkan, or GL as a fallback).
   - --device=dri
   # A project refers to its media by absolute path (docs/project-files.md), and the document
   # portal only exposes the file it was handed, not the media beside it: a project opened from
@@ -31,6 +41,9 @@ finish-args:
   - --filesystem=/media
   - --filesystem=/run/media
   - --filesystem=/mnt
+  # Deliberately not granted: network (the optional --control server listens on 127.0.0.1 in
+  # the sandbox; `flatpak override --user --share=network ai.storyteller.filmcraft` exposes it
+  # to host agents) and host-wide filesystem access.
 build-options:
   append-path: /usr/lib/sdk/rust-stable/bin
 modules:
@@ -41,8 +54,10 @@ modules:
         CARGO_HOME: /run/build/filmcraft/cargo
         CARGO_NET_OFFLINE: 'true'
     build-commands:
-      - cargo --offline build --release --locked -p filmcraft
+      - cargo --offline build --release --locked -p filmcraft -p filmcraft-cli
       - install -Dm755 target/release/filmcraft /app/bin/filmcraft
+      # The headless CLI and its stdio MCP server, as in the release bundle (#346).
+      - install -Dm755 target/release/filmcraft-cli /app/bin/filmcraft-cli
       - install -Dm644 packaging/linux/ai.storyteller.filmcraft.desktop /app/share/applications/ai.storyteller.filmcraft.desktop
       - install -Dm644 packaging/linux/ai.storyteller.filmcraft.mime.xml /app/share/mime/packages/ai.storyteller.filmcraft.xml
       - mkdir -p /app/share/icons && cp -R assets/app-icon/hicolor /app/share/icons/
