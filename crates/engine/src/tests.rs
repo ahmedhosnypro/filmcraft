@@ -326,6 +326,92 @@ fn add_keyframe_toggles_the_keyframe_at_the_playhead() {
     assert_eq!(scale(&s), (0, 100.0));
 }
 
+/// `effects.setParam` writes a keyframe only on an animated parameter. An agent that sends a value
+/// with a `time` to a parameter that is not animated gets a static value (the result says so:
+/// 0 keyframes); `"keyframe": true` is the stopwatch and the value in one step.
+#[test]
+fn set_param_writes_a_keyframe_when_asked_or_animated() {
+    let mut s = demo();
+    let c = s.active_sequence().unwrap().video_tracks[0].items[0].id.0;
+    // (keyframes, static value, value at 0.5 s, value at 2.5 s)
+    let scale = |s: &Session| {
+        let it = s.active_sequence().unwrap().find_item(filmcraft_project::ClipId(c)).unwrap().1;
+        let p = &it.effect("motion").unwrap().params["scale"];
+        let at = |seconds: f64| p.f64_at(it.source_time_at(Tick::from_seconds_f64(seconds)));
+        (p.keyframes.len(), p.value.as_f64().unwrap(), at(0.5), at(2.5))
+    };
+    let set = |value: f64, seconds: f64| json!({"clip": c, "effect": "motion", "param": "scale", "value": value, "seconds": seconds});
+    // not animated: the time is not used and the value is static
+    let r = s.execute("effects.setParam", set(80.0, 0.5)).unwrap();
+    assert_eq!(r["keyframes"], 0, "{r}");
+    assert_eq!(scale(&s), (0, 80.0, 80.0, 80.0));
+    // `keyframe`: the parameter becomes animated at that time
+    let mut first = set(60.0, 0.5);
+    first["keyframe"] = json!(true);
+    let r = s.execute("effects.setParam", first).unwrap();
+    assert_eq!(r["keyframes"], 1, "{r}");
+    assert_eq!(scale(&s).0, 1);
+    // animated now, so a plain set at another time is a second keyframe
+    let r = s.execute("effects.setParam", set(120.0, 2.5)).unwrap();
+    assert_eq!(r["keyframes"], 2, "{r}");
+    let (n, _, a, b) = scale(&s);
+    assert_eq!((n, a, b), (2, 60.0, 120.0));
+    // a keyframe that is already there is replaced, not doubled
+    let mut again = set(70.0, 0.5);
+    again["keyframe"] = json!(true);
+    assert_eq!(s.execute("effects.setParam", again).unwrap()["keyframes"], 2);
+    assert_eq!(scale(&s).2, 70.0);
+    s.undo();
+    assert_eq!(scale(&s).2, 60.0);
+    s.undo();
+    assert_eq!(scale(&s).0, 1);
+    s.redo();
+    s.redo();
+    let (n, _, a, b) = scale(&s);
+    assert_eq!((n, a, b), (2, 70.0, 120.0));
+    // a parameter that cannot be animated refuses the keyframe and keeps its value
+    let blend = json!({"clip": c, "effect": "opacity", "param": "blend", "value": 8, "keyframe": true});
+    let e = s.execute("effects.setParam", blend).unwrap_err().to_string();
+    assert!(e.contains("cannot be animated"), "{e}");
+    let it = s.active_sequence().unwrap().find_item(filmcraft_project::ClipId(c)).unwrap().1;
+    assert_eq!(it.effect("opacity").unwrap().params["blend"].value, filmcraft_project::ParamValue::Choice(0));
+    // `keyframe` that is not a bool means no keyframe request
+    let mut odd = set(70.0, 0.5);
+    odd["keyframe"] = json!("yes");
+    assert_eq!(s.execute("effects.setParam", odd).unwrap()["keyframes"], 2);
+}
+
+/// A choice parameter takes its option name as well as its index, as transition parameters do
+/// (`effects.list {"detail": true}` lists the names).
+#[test]
+fn set_param_takes_a_choice_by_name() {
+    use filmcraft_project::ParamValue;
+    let mut s = demo();
+    let c = s.active_sequence().unwrap().video_tracks[0].items[0].id.0;
+    let blend =
+        |s: &Session| s.active_sequence().unwrap().find_item(filmcraft_project::ClipId(c)).unwrap().1.effect("opacity").unwrap().params["blend"].value.clone();
+    let set = |value: serde_json::Value| json!({"clip": c, "effect": "opacity", "param": "blend", "value": value});
+    s.execute("effects.setParam", set(json!("Screen"))).unwrap();
+    assert_eq!(blend(&s), ParamValue::Choice(8));
+    s.execute("effects.setParam", set(json!("linear dodge (add)"))).unwrap();
+    assert_eq!(blend(&s), ParamValue::Choice(10), "names are matched without case");
+    s.execute("effects.setParam", set(json!(12))).unwrap();
+    assert_eq!(blend(&s), ParamValue::Choice(12), "an index works as before");
+    s.undo();
+    assert_eq!(blend(&s), ParamValue::Choice(10));
+    s.redo();
+    assert_eq!(blend(&s), ParamValue::Choice(12));
+    // a name that is not an option is an error that lists the options and changes nothing
+    let e = s.execute("effects.setParam", set(json!("Glow"))).unwrap_err().to_string();
+    assert!(e.contains("Screen") && e.contains("Overlay"), "{e}");
+    for bad in [json!(""), json!(null), json!([8]), json!({"name": "Screen"}), json!(-1), json!(1.5)] {
+        assert!(s.execute("effects.setParam", set(bad.clone())).is_err(), "{bad}");
+    }
+    assert_eq!(blend(&s), ParamValue::Choice(12));
+    // a name is still the wrong type for a parameter that is not a choice
+    assert!(s.execute("effects.setParam", json!({"clip": c, "effect": "motion", "param": "scale", "value": "Screen"})).is_err());
+}
+
 /// Dragging the Volume line or one of its keyframes in the timeline (#223) sends a keyframe edit
 /// every frame; `merge` keeps the whole drag one undo step and `begin` starts the next one.
 #[test]
