@@ -254,6 +254,21 @@ pub fn visible_items(app: &FilmcraftApp, inst: Inst) -> Vec<ItemId> {
     crate::panels::project_views::items_in_view(app, &v, &app.ui.project_search.to_ascii_lowercase())
 }
 
+/// The command Select All (Cmd+A) runs with the Project panel focused: the items of the shown
+/// bin, plus those of sub-bins twirled open in List view (`project.selectAll {bin, expanded}`).
+/// Items in closed bins and in bins of other tabs stay unselected, as in Premiere (#456). While a
+/// search filters the panel, exactly the rows it shows (`project.select {items}`).
+pub fn select_all_command(app: &FilmcraftApp) -> (String, Value) {
+    let inst = shown_inst(app);
+    if !app.ui.project_search.is_empty() {
+        let items: Vec<u64> = visible_items(app, inst).into_iter().map(|i| i.0).collect();
+        return ("project.select".into(), json!({"items": items}));
+    }
+    let v = view_of(app, inst);
+    let expanded: &[u64] = if v.mode == ViewMode::List { &app.ui.expanded_bins } else { &[] };
+    ("project.selectAll".into(), json!({"bin": v.bin.0, "expanded": expanded}))
+}
+
 // ------------------------------------------------------------------------------------ panel
 
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
