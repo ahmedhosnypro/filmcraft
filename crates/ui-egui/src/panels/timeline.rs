@@ -2186,7 +2186,48 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
             }
         }
     }
+    // ---- OS file drops imported with "drop imports to the timeline": placed at the drop point, one after another
+    if let Some((items, p)) = app.pending_timeline_drop.clone()
+        && layout.content.contains(p)
+    {
+        app.pending_timeline_drop = None;
+        let row = layout.row_at(p.y).cloned().or_else(|| layout.rows.iter().find(|r| r.kind == TrackKind::Video).cloned());
+        if let Some(row) = row {
+            let (vt, at) = match row.kind {
+                TrackKind::Video => (Some(row.track.0), seq.audio_tracks.get(row.index).or(seq.audio_tracks.first()).map(|t| t.id.0)),
+                TrackKind::Audio => (seq.video_tracks.get(row.index).or(seq.video_tracks.first()).map(|t| t.id.0), Some(row.track.0)),
+            };
+            let still = app.session.prefs.timeline.still_duration(rate);
+            let durations: Vec<Tick> = items
+                .iter()
+                .map(|&item| {
+                    let is_still = app.session.project.item(item).and_then(|i| i.as_media()).is_some_and(|m| m.info.kind == filmcraft_media::MediaKind::Still);
+                    app.session.project.item(item).map(|i| i.duration()).filter(|d| d.0 > 0 && !is_still).unwrap_or(still)
+                })
+                .collect();
+            let start = snap(app, seq, layout, rate.snap_nearest(layout.tick_at(p.x).max(Tick::ZERO)), &[]);
+            for (item, t) in items.iter().zip(chain_starts(start, &durations)) {
+                let params = json!({"item": item.0, "track": vt, "audioTrack": at, "time": t.0, "insert": false});
+                if let Err(e) = app.session.execute("timeline.place", params) {
+                    app.ui.status = e.to_string();
+                }
+            }
+        }
+    }
     app.auto.add("timeline.tracks", layout.content, "tracks");
+}
+
+/// Start tick of each clip when the clips are laid end to end from `start`. Saturates rather than overflows.
+pub(crate) fn chain_starts(start: Tick, durations: &[Tick]) -> Vec<Tick> {
+    let mut t = start;
+    durations
+        .iter()
+        .map(|d| {
+            let at = t;
+            t = Tick(t.0.saturating_add(d.0.max(0)));
+            at
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -2209,5 +2250,43 @@ mod waveform_tests {
         assert!(waveform_display_gain(0.0, 0.0).is_finite());
         // clip gain still applies
         assert!((db(waveform_display_gain(1.0, -6.0)) - (-6.0)).abs() < 0.1);
+    }
+}
+
+#[cfg(test)]
+mod chain_starts_tests {
+    use super::chain_starts;
+    use filmcraft_time::Tick;
+
+    #[test]
+    fn empty_list_has_no_starts() {
+        assert!(chain_starts(Tick(100), &[]).is_empty());
+    }
+
+    #[test]
+    fn one_clip_starts_at_the_drop_point() {
+        assert_eq!(chain_starts(Tick(7), &[Tick(30)]), vec![Tick(7)]);
+    }
+
+    #[test]
+    fn several_clips_are_laid_end_to_end() {
+        let durations = [Tick(10), Tick(25), Tick(5)];
+        assert_eq!(chain_starts(Tick(100), &durations), vec![Tick(100), Tick(110), Tick(135)]);
+    }
+
+    #[test]
+    fn start_near_i64_max_saturates_without_panicking() {
+        let starts = chain_starts(Tick(i64::MAX - 5), &[Tick(10), Tick(10), Tick(10)]);
+        assert_eq!(starts, vec![Tick(i64::MAX - 5), Tick(i64::MAX), Tick(i64::MAX)]);
+    }
+
+    #[test]
+    fn zero_length_clips_share_one_start() {
+        assert_eq!(chain_starts(Tick(42), &[Tick(0), Tick(0), Tick(9)]), vec![Tick(42), Tick(42), Tick(42)]);
+    }
+
+    #[test]
+    fn negative_durations_count_as_zero() {
+        assert_eq!(chain_starts(Tick(5), &[Tick(-3), Tick(4)]), vec![Tick(5), Tick(5)]);
     }
 }

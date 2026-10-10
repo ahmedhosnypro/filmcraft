@@ -266,6 +266,8 @@ pub struct FilmcraftApp {
     /// The sequence whose view `ui.timeline` holds, and that view as it was last exchanged with
     /// `session.state.timeline_views` (see `sync_timeline_view`).
     timeline_view_of: Option<filmcraft_engine::project::ItemId>,
+    /// Items imported by an OS file drop, to place on the Timeline at the drop point this frame.
+    pending_timeline_drop: Option<(Vec<filmcraft_engine::project::ItemId>, egui::Pos2)>,
     timeline_view_last: Option<filmcraft_engine::project::SequenceView>,
     pub fps: f32,
     last_time: f64,
@@ -453,6 +455,7 @@ impl FilmcraftApp {
             integrated_titlebar: false,
             last_timeline_width: 1000.0,
             timeline_view_of: None,
+            pending_timeline_drop: None,
             timeline_view_last: None,
             fps: 60.0,
             last_time: 0.0,
@@ -1126,7 +1129,8 @@ impl FilmcraftApp {
         r
     }
 
-    /// Import dropped files.
+    /// Import dropped files. With Timeline ▸ drop imports to the timeline, the new items are also
+    /// queued to be placed at the pointer (see `timeline::interact`).
     fn handle_drops(&mut self, ctx: &egui::Context) {
         let dropped = ctx.input(|i| i.raw.dropped_files.clone());
         let mut paths = Vec::new();
@@ -1137,7 +1141,18 @@ impl FilmcraftApp {
             }
         }
         if !paths.is_empty() {
-            let _ = self.session.execute("file.import", json!({"paths": paths, "bin": self.import_bin().0}));
+            let pointer = ctx.input(|i| i.pointer.hover_pos().or(i.pointer.latest_pos()));
+            let imported = self.session.execute("file.import", json!({"paths": paths, "bin": self.import_bin().0}));
+            if let Ok(v) = imported
+                && let Some(pos) = pointer
+                && self.session.prefs.timeline.drop_import_to_timeline
+            {
+                let items: Vec<filmcraft_engine::project::ItemId> =
+                    v["items"].as_array().map(|a| a.iter().filter_map(|i| i.as_u64()).map(filmcraft_engine::project::ItemId).collect()).unwrap_or_default();
+                if !items.is_empty() {
+                    self.pending_timeline_drop = Some((items, pos));
+                }
+            }
         }
     }
 
@@ -1366,6 +1381,8 @@ impl FilmcraftApp {
             state::Mode::Import => panels::import_mode::show(self, ui, body),
             state::Mode::Export => panels::export_mode::show(self, ui, body),
         }
+        // the Timeline has had its chance to place a file drop this frame; anything left stays a bin import
+        self.pending_timeline_drop = None;
         panels::dialogs::show(self, &ctx);
         if !self.ui.show_status_bar {
             // no bar to draw the job in, but a finished preview render still plays

@@ -428,6 +428,8 @@ pub struct TimelinePrefs {
     pub match_frame_sets_in: bool,
     pub restore_open_sequences: bool,
     pub add_tracks_automatically: bool,
+    /// Files dropped onto the Timeline are placed directly on it.
+    pub drop_import_to_timeline: bool,
 }
 
 impl Default for TimelinePrefs {
@@ -454,6 +456,7 @@ impl Default for TimelinePrefs {
             match_frame_sets_in: false,
             restore_open_sequences: true,
             add_tracks_automatically: true,
+            drop_import_to_timeline: true,
         }
     }
 }
@@ -1005,6 +1008,7 @@ static CATEGORIES: &[Category] = &[
             b("timeline.matchFrameSetsIn", "Match frame sets in point", false),
             b("timeline.restoreOpenSequences", "Restore open sequences when opening projects", false),
             b("timeline.addTracksAutomatically", "Add tracks automatically when editing source clips onto the Timeline", false),
+            b("timeline.dropImportToTimeline", "Place files dropped onto the Timeline directly on the Timeline", true),
         ],
     },
     Category {
