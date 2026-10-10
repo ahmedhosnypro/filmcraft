@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use filmcraft_color::{ColorInfo, Matrix, Primaries, Range, Transfer};
+use filmcraft_color::ColorInfo;
 use filmcraft_frame::{AudioBuffer, VideoFrame};
 use filmcraft_isobmff::{CodecConfig, Mp4File, TrackKind};
 use filmcraft_media::{AudioStreamInfo, FrameRequest, MediaError, MediaInfo, MediaKind, MediaSource, SharedSource, VideoStreamInfo};
@@ -104,48 +104,40 @@ fn hdr_metadata(md: Option<&filmcraft_isobmff::MasteringDisplay>, cll: Option<(u
     })
 }
 
+/// Colour of a video sample entry. The `colr` box (`nclx` / `nclc`) wins; what it leaves
+/// unspecified, or all of it when there is none (ffmpeg writes MP4 without `colr` by default),
+/// comes from the stream's own description: `vpcC` / `apvC`, or the SPS VUI in `avcC` / `hvcC`
+/// and the sequence header in `av1C`. The rest defaults by frame size.
 fn color_from(entry: &filmcraft_isobmff::SampleEntry, w: u32, h: u32) -> ColorInfo {
-    let mut c = ColorInfo { matrix: filmcraft_frame::default_matrix(w, h), transfer: Transfer::Bt709, primaries: Primaries::Bt709, range: Range::Limited };
-    // VP9 and APV carry their colour description in vpcC / apvC (used when there is no colr box).
-    let vpc = match &entry.codec {
-        CodecConfig::Vp9(v) => Some(filmcraft_isobmff::ColorInfo::Nclx {
-            primaries: v.colour_primaries as u16,
-            transfer: v.transfer_characteristics as u16,
-            matrix: v.matrix_coefficients as u16,
-            full_range: v.full_range,
-        }),
-        CodecConfig::Apv(a) if a.color_description_present => Some(filmcraft_isobmff::ColorInfo::Nclx {
-            primaries: a.color_primaries as u16,
-            transfer: a.transfer_characteristics as u16,
-            matrix: a.matrix_coefficients as u16,
-            full_range: a.full_range,
-        }),
+    use crate::stream_color::ColorCodes;
+    use filmcraft_isobmff::ColorInfo as Colr;
+    let colr = match entry.video.as_ref().and_then(|v| v.color.as_ref()) {
+        Some(Colr::Nclx { primaries, transfer, matrix, full_range }) => {
+            Some(ColorCodes::from_wide((*primaries).into(), (*transfer).into(), (*matrix).into(), Some(*full_range)))
+        }
+        // QuickTime `nclc` has no range flag
+        Some(Colr::Nclc { primaries, transfer, matrix }) => Some(ColorCodes::from_wide((*primaries).into(), (*transfer).into(), (*matrix).into(), None)),
+        // an ICC profile, or no `colr`: no code points
         _ => None,
     };
-    if let Some(col) = entry.video.as_ref().and_then(|v| v.color.as_ref()).or(vpc.as_ref()) {
-        let (p, t, m, full) = match col {
-            filmcraft_isobmff::ColorInfo::Nclx { primaries, transfer, matrix, full_range } => (*primaries, *transfer, *matrix, *full_range),
-            filmcraft_isobmff::ColorInfo::Nclc { primaries, transfer, matrix } => (*primaries, *transfer, *matrix, false),
-            _ => return c,
-        };
-        if let Some(m) = Matrix::from_code(m as u8) {
-            c.matrix = m;
-        }
-        if let Some(t) = Transfer::from_code(t as u8) {
-            c.transfer = t;
-        }
-        c.primaries = match p {
-            9 => Primaries::Bt2020,
-            12 => Primaries::P3D65,
-            5 => Primaries::Bt601_625,
-            6 => Primaries::Bt601_525,
-            _ => Primaries::Bt709,
-        };
-        if full {
-            c.range = Range::Full;
-        }
-    }
-    c
+    let stream = match &entry.codec {
+        CodecConfig::Vp9(v) => Some(ColorCodes {
+            primaries: v.colour_primaries,
+            transfer: v.transfer_characteristics,
+            matrix: v.matrix_coefficients,
+            full_range: Some(v.full_range),
+        }),
+        CodecConfig::Apv(a) if a.color_description_present => Some(ColorCodes {
+            primaries: a.color_primaries,
+            transfer: a.transfer_characteristics,
+            matrix: a.matrix_coefficients,
+            full_range: Some(a.full_range),
+        }),
+        CodecConfig::Apv(_) => None,
+        codec => crate::stream_color::from_codec_config(codec),
+    };
+    let sources: Vec<ColorCodes> = [colr, stream].into_iter().flatten().collect();
+    crate::stream_color::resolve(w, h, &sources)
 }
 
 impl Mp4Source {
