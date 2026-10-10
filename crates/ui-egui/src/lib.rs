@@ -321,6 +321,8 @@ pub struct FilmcraftApp {
     watched_render: Option<(u64, Tick)>,
     /// Settings last applied to the UI (theme, tooltips, frame cache, audio device).
     applied_prefs: Option<filmcraft_engine::autosave::Preferences>,
+    /// Settings ▸ Appearance ▸ UI Scale last applied, with the system scale it was applied for.
+    applied_ui_scale: Option<(Option<f32>, f32)>,
     workspace_restored: bool,
     /// Window ▸ Workspaces: saved layouts ([`dock::WORKSPACES_FILE`] in the data directory).
     pub workspaces: dock::WorkspacePrefs,
@@ -528,6 +530,7 @@ impl FilmcraftApp {
             gpu: None,
             watched_render: None,
             applied_prefs: None,
+            applied_ui_scale: None,
             workspace_restored: false,
             workspaces,
             menu_workspaces: Default::default(),
@@ -587,9 +590,28 @@ impl FilmcraftApp {
         ctx.global_style_mut(|s| s.interaction.tooltip_delay = delay);
     }
 
+    /// Settings ▸ Appearance ▸ UI Scale: a fixed scale makes a point that many physical pixels,
+    /// whatever scale the system reports. It is applied only when the setting or the system scale
+    /// changes, so Ctrl+- / Ctrl++ still zoom the interface for the session; going back to Auto
+    /// restores the system's scale.
+    fn apply_ui_scale(&mut self, ctx: &egui::Context) {
+        let want = self.session.prefs.appearance.ui_scale_factor();
+        let native = ctx.native_pixels_per_point().filter(|v| v.is_finite() && *v > 0.0).unwrap_or(1.0);
+        if self.applied_ui_scale == Some((want, native)) {
+            return;
+        }
+        let prev = self.applied_ui_scale.replace((want, native));
+        match want {
+            Some(scale) => ctx.set_zoom_factor(scale / native),
+            None if prev.is_some_and(|(p, _)| p.is_some()) => ctx.set_zoom_factor(1.0),
+            None => {}
+        }
+    }
+
     /// Make the UI follow the settings after they change (theme, tooltips, frame cache budget,
     /// play after rendering, audio device).
     pub fn apply_prefs(&mut self, ctx: &egui::Context) {
+        self.apply_ui_scale(ctx);
         // Appearance Mode ▸ Sync with system: follow the system while running. The host reports
         // changes as they happen (no polling) and wakes the UI only when the value changes.
         if self.applied_prefs.is_some() {
