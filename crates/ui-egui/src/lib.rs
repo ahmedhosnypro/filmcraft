@@ -1609,7 +1609,21 @@ impl eframe::App for FilmcraftApp {
                     .position(|e| pointer(e) || matches!(e, egui::Event::Key { pressed: false, .. }))
                     .map_or(self.synthetic.len(), |i| if pointer(&self.synthetic[i]) { i.max(1) } else { i + 1 })
             };
-            raw_input.events.extend(self.synthetic.drain(..n));
+            // A press's modifiers go down before it and up after its release, as real keys would,
+            // so a drag that egui recognises frames after the press still sees Shift / Ctrl.
+            for e in self.synthetic.drain(..n) {
+                match e {
+                    egui::Event::PointerButton { pressed: true, modifiers, .. } if !modifiers.is_none() => {
+                        raw_input.events.push(egui::Event::ModifiersChanged(modifiers));
+                        raw_input.events.push(e);
+                    }
+                    egui::Event::PointerButton { pressed: false, modifiers, .. } if !modifiers.is_none() => {
+                        raw_input.events.push(e);
+                        raw_input.events.push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+                    }
+                    _ => raw_input.events.push(e),
+                }
+            }
         }
     }
 
