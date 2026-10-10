@@ -189,7 +189,7 @@ fn write_and_import(s: &mut Session, p: &Value, samples: &[f32], rate: u32, near
         _ => None,
     });
     let dir = beside.unwrap_or_else(|| crate::voiceover::media_dir(s, p, "Narrations"));
-    let path = crate::voiceover::unique_wav_path(s, &dir, BASE_NAME);
+    let path = crate::voiceover::unique_wav_path(s, &dir, BASE_NAME)?;
     if !cfg!(target_arch = "wasm32") {
         std::fs::create_dir_all(&dir).map_err(|e| EngineError::Other(format!("{dir}: {e}")))?;
     }
@@ -395,7 +395,7 @@ fn spawn(s: &mut Session, job: crate::Job, wait: bool, name: &str, run: impl FnO
 
 type JobResult = std::sync::Mutex<Option<std::result::Result<filmcraft_export::Report, String>>>;
 
-fn finish(prog: &filmcraft_export::Progress, res: &JobResult, r: std::result::Result<String, String>, t0: std::time::Instant) {
+fn finish(prog: &filmcraft_export::Progress, res: &JobResult, r: std::result::Result<String, String>, t0: web_time::Instant) {
     use std::sync::atomic::Ordering;
     let secs = t0.elapsed().as_secs_f64();
     let r = match r {
@@ -431,7 +431,7 @@ fn render_job(s: &mut Session, p: &Value) -> Result<Value> {
     let (prog, res, cache) = (job.progress.clone(), job.result.clone(), s.tts_cache.clone());
     let wait = p.get("wait").and_then(Value::as_bool).unwrap_or(false);
     let id = spawn(s, job, wait, "filmcraft-tts", move || {
-        let t0 = std::time::Instant::now();
+        let t0 = web_time::Instant::now();
         *prog.status.lock().unwrap_or_else(PoisonError::into_inner) = "Synthesizing…".into();
         let r = match render(&n, crate::transcript::models_dir().as_deref()) {
             Ok(a) => {
@@ -462,7 +462,7 @@ fn download_voices(s: &mut Session, p: &Value) -> Result<Value> {
     job.progress.total.store(tts::catalog::missing_bytes(&dir), std::sync::atomic::Ordering::Relaxed);
     let (prog, res) = (job.progress.clone(), job.result.clone());
     let id = spawn(s, job, wait, "filmcraft-tts-download", move || {
-        let t0 = std::time::Instant::now();
+        let t0 = web_time::Instant::now();
         let r = download_package(&dir, &prog);
         finish(&prog, &res, r.map(|()| "Natural voices installed".to_string()), t0);
     })?;

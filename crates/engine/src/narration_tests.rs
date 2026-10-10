@@ -396,3 +396,30 @@ fn natural_voices_are_listed_and_explain_what_is_missing() {
         assert!(e.contains("not available in this build"), "{e}");
     }
 }
+
+#[test]
+fn a_project_subset_keeps_only_the_narrations_of_kept_items() {
+    let mut s = demo();
+    let dir = tmp("subset");
+    let r = s.execute("tts.create", json!({"text": "Hello.", "voice": "basic-male", "dir": dir})).unwrap();
+    let item = ItemId(r["item"].as_u64().unwrap());
+    let others: std::collections::BTreeSet<ItemId> = s.project.items.keys().copied().filter(|i| *i != item).collect();
+    assert!(crate::project_tools::project_subset(&s.project, &others).narrations.is_empty());
+    let with: std::collections::BTreeSet<ItemId> = [item].into();
+    assert!(crate::project_tools::project_subset(&s.project, &with).narrations.contains_key(&item));
+}
+
+#[test]
+fn unique_wav_path_gives_up_instead_of_looping_forever() {
+    let mut s = demo();
+    let first = crate::voiceover::unique_wav_path(&s, "/nonexistent-dir", "Narration").unwrap();
+    assert!(first.ends_with("Narration 1.wav"), "{first}");
+    // every candidate name taken by a project item: an error, not an endless loop
+    let template = s.project.items.values().next().cloned().unwrap();
+    for k in 1..=99_999u32 {
+        let mut it = template.clone();
+        it.name = format!("Narration {k}.wav");
+        std::sync::Arc::make_mut(&mut s.project).items.insert(ItemId(1_000_000 + u64::from(k)), it);
+    }
+    assert!(crate::voiceover::unique_wav_path(&s, "/nonexistent-dir", "Narration").is_err());
+}

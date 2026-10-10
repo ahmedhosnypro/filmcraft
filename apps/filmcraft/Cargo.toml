@@ -11,7 +11,7 @@ build = "build.rs"
 workspace = true
 
 [features]
-default = ["neural-voices"]
+default = []
 # Speech-to-text (Text panel ▸ Transcribe) with Whisper on the CPU, and model downloads.
 whisper = ["filmcraft-engine/whisper", "filmcraft-engine/speech-download"]
 # Natural Text to Speech voices (Kokoro-82M on the CPU, downloaded on first use).
@@ -28,6 +28,7 @@ log = { workspace = true }
 rfd = { workspace = true }
 cpal = "0.16"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+sys-locale = "0.3"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 muda = "0.21"

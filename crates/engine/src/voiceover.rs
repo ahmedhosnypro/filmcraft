@@ -406,18 +406,18 @@ pub(crate) fn media_dir(s: &Session, p: &Value, fallback: &str) -> String {
     base.join(fallback).to_string_lossy().into_owned()
 }
 
-/// `<dir>/<base> <n>.wav` with the first `n` used by neither a project item nor an existing file.
-pub(crate) fn unique_wav_path(s: &Session, dir: &str, base: &str) -> String {
+/// `<dir>/<base> <n>.wav` with the first `n` used by neither a project item nor an existing file;
+/// an error once `n` passes 99 999 (bounded: `file_size` is a filesystem call per try).
+pub(crate) fn unique_wav_path(s: &Session, dir: &str, base: &str) -> Result<String> {
     let names: std::collections::HashSet<String> = s.project.items.values().map(|i| i.name.clone()).collect();
-    let mut k = 1u64;
-    loop {
+    for k in 1..=99_999u32 {
         let file = format!("{base} {k}.wav");
         let path = std::path::Path::new(dir).join(&file).to_string_lossy().into_owned();
         if !names.contains(&file) && s.services.file_size(&path).is_err() {
-            return path;
+            return Ok(path);
         }
-        k += 1;
     }
+    Err(EngineError::Other(format!("{dir}: no free file name for \"{base} <n>.wav\"")))
 }
 
 fn stop(s: &mut Session, p: &Value) -> Result<Value> {
@@ -470,7 +470,7 @@ fn stop(s: &mut Session, p: &Value) -> Result<Value> {
     // write the file
     let dir = record_dir(s, p);
     let base = s.prefs.voice_over.name.clone();
-    let path = unique_wav_path(s, &dir, &base);
+    let path = unique_wav_path(s, &dir, &base)?;
     if !cfg!(target_arch = "wasm32") {
         std::fs::create_dir_all(&dir).map_err(|e| EngineError::Other(format!("{dir}: {e}")))?;
     }
