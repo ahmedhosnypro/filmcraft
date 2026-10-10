@@ -1342,10 +1342,73 @@ fn build() -> Vec<CommandSpec> {
             let sel = clips_p(s, p);
             let linked = sel.iter().all(|c| s.active_sequence().and_then(|q| q.find_item(*c)).is_some_and(|(_, i)| i.link.is_some()));
             s.edit_sequence(if linked { "Unlink" } else { "Link" }, |q, ctx, _| {
-                let l = if linked { None } else { Some(ctx.alloc()) };
-                for c in &sel {
-                    if let Some((_, i)) = q.find_item_mut(*c) {
-                        i.link = l;
+                if linked {
+                    for c in &sel {
+                        if let Some((_, i)) = q.find_item_mut(*c) {
+                            i.link = None;
+                        }
+                    }
+                } else {
+                    let has_video = sel.iter().any(|c| q.find_item(*c).is_some_and(|(tid, _)| q.video_tracks.iter().any(|t| t.id == tid)));
+                    let has_audio = sel.iter().any(|c| q.find_item(*c).is_some_and(|(tid, _)| q.audio_tracks.iter().any(|t| t.id == tid)));
+                    let v_clips: Vec<(ClipId, filmcraft_project::ItemId, filmcraft_time::TimeRange)> = sel
+                        .iter()
+                        .filter_map(|c| {
+                            let (tid, i) = q.find_item(*c)?;
+                            q.video_tracks.iter().any(|t| t.id == tid).then_some((*c, i.item, i.range()))
+                        })
+                        .collect();
+                    if has_video && has_audio && v_clips.len() > 1 {
+                        let audio_specs: Vec<(ClipId, filmcraft_project::ItemId, filmcraft_time::TimeRange)> = sel
+                            .iter()
+                            .filter_map(|c| {
+                                let (tid, i) = q.find_item(*c)?;
+                                q.audio_tracks.iter().any(|t| t.id == tid).then_some((*c, i.item, i.range()))
+                            })
+                            .collect();
+                        let mut linked_audios = std::collections::HashSet::new();
+                        for (vid, item_id, vrange) in &v_clips {
+                            let l = ctx.alloc();
+                            if let Some((_, vi)) = q.find_item_mut(*vid) {
+                                vi.link = Some(l);
+                            }
+                            // Pair with overlapping audio clips from the same item, or overlapping audio clips if no same-item audio
+                            let matching: Vec<ClipId> = audio_specs
+                                .iter()
+                                .filter(|(aid, aitem, arange)| !linked_audios.contains(aid) && aitem == item_id && arange.overlaps(vrange))
+                                .map(|(aid, _, _)| *aid)
+                                .collect();
+                            let to_link = if !matching.is_empty() {
+                                matching
+                            } else {
+                                audio_specs
+                                    .iter()
+                                    .filter(|(aid, _, arange)| !linked_audios.contains(aid) && arange.overlaps(vrange))
+                                    .map(|(aid, _, _)| *aid)
+                                    .collect()
+                            };
+                            for aid in to_link {
+                                linked_audios.insert(aid);
+                                if let Some((_, ai)) = q.find_item_mut(aid) {
+                                    ai.link = Some(l);
+                                }
+                            }
+                        }
+                        // Any remaining selected audio clips get their own links
+                        for (aid, _, _) in audio_specs {
+                            if !linked_audios.contains(&aid)
+                                && let Some((_, ai)) = q.find_item_mut(aid)
+                            {
+                                ai.link = Some(ctx.alloc());
+                            }
+                        }
+                    } else {
+                        let l = ctx.alloc();
+                        for c in &sel {
+                            if let Some((_, i)) = q.find_item_mut(*c) {
+                                i.link = Some(l);
+                            }
+                        }
                     }
                 }
                 Ok(())
