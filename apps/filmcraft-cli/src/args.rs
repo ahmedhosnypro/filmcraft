@@ -19,6 +19,7 @@ const VALUED: &[&str] = &[
     "--end",
     "--data-dir",
     "--settings",
+    "--gpu-rendering",
 ];
 
 #[derive(Debug, Default)]
@@ -139,5 +140,15 @@ mod tests {
     fn double_dash_ends_options() {
         let a = args("import -- --weird-name.mov a.mov");
         assert_eq!(a.positionals, ["import", "--weird-name.mov", "a.mov"]);
+    }
+
+    #[test]
+    fn gpu_rendering_takes_a_space_separated_value() {
+        let a = args("export --gpu-rendering off out.wav --start 0 --end 0.1");
+        assert_eq!(a.positionals, ["export", "out.wav"]);
+        assert_eq!(a.opt("--gpu-rendering"), Some("off"));
+        let b = args("export out.wav --gpu-rendering auto");
+        assert_eq!(b.positionals, ["export", "out.wav"]);
+        assert_eq!(b.opt("--gpu-rendering"), Some("auto"));
     }
 }
