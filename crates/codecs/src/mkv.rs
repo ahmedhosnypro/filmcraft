@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use filmcraft_color::{ColorInfo, Matrix, Primaries, Range, Transfer};
+use filmcraft_color::{ColorInfo, Matrix, Transfer};
 use filmcraft_frame::{AudioBuffer, VideoFrame};
 use filmcraft_isobmff::{AvcConfig, CodecConfig, FourCc, HevcConfig, PcmConfig, SampleEntry, VpcConfig};
 use filmcraft_matroska::{Codec, MkvFile, TrackKind};
@@ -24,6 +24,7 @@ use filmcraft_time::{FrameRate, Tick};
 
 use crate::audio::{PacketDecoder, decode_pcm};
 use crate::gop::{GopCache, VideoSamples};
+use crate::stream_color::ColorCodes;
 use crate::video::VideoDecoder;
 use crate::{CodecError, make_video_decoder};
 
@@ -57,6 +58,8 @@ pub struct MkvSource {
     /// Video codec as an ISO-BMFF sample entry (for the decoder factories).
     ventry: Option<SampleEntry>,
     video: GopCache,
+    /// The alpha layer of a VP9 track with `AlphaMode` 1 (WebM transparency, #402).
+    alpha: Option<Arc<crate::webm_alpha::AlphaLayer>>,
     /// The playable audio tracks in file order: `info.audio_streams[k]` describes `audios[k]`.
     audios: Vec<MkvAudio>,
 }
@@ -218,32 +221,24 @@ fn hdr_metadata(c: &filmcraft_matroska::Colour) -> Option<filmcraft_color::HdrMe
     })
 }
 
-fn color_of(v: &filmcraft_matroska::VideoInfo, w: u32, h: u32) -> (ColorInfo, bool) {
-    let mut c = ColorInfo { matrix: filmcraft_frame::default_matrix(w, h), transfer: Transfer::Bt709, primaries: Primaries::Bt709, range: Range::Limited };
-    let Some(col) = &v.colour else { return (c, false) };
-    let mut explicit = false;
-    if let Some(m) = col.matrix_coefficients.and_then(|m| Matrix::from_code(m as u8)) {
-        c.matrix = m;
-        explicit = true;
-    }
-    if let Some(t) = col.transfer_characteristics.and_then(|t| Transfer::from_code(t as u8)) {
-        c.transfer = t;
-        explicit = true;
-    }
-    if let Some(p) = col.primaries {
-        c.primaries = match p {
-            9 => Primaries::Bt2020,
-            12 => Primaries::P3D65,
-            5 => Primaries::Bt601_625,
-            6 => Primaries::Bt601_525,
-            _ => Primaries::Bt709,
+/// Colour of a video track: the `Colour` element wins; what it leaves unspecified, or all of it
+/// when there is none, comes from the stream's own description (the SPS VUI in an `avcC` /
+/// `hvcC`, the sequence header in an `av1C`); the rest defaults by frame size. The flag says
+/// whether `Colour` signals anything that overrides the decoder.
+fn color_of(v: &filmcraft_matroska::VideoInfo, w: u32, h: u32, stream: Option<ColorCodes>) -> (ColorInfo, bool) {
+    // H.273 code points; `Range`: 1 broadcast (limited), 2 full, 0 / 3 not signalled here
+    let code = |c: Option<u64>| c.unwrap_or(2);
+    let container = v.colour.as_ref().map(|col| {
+        let range = match col.range {
+            Some(1) => Some(false),
+            Some(2) => Some(true),
+            _ => None,
         };
-    }
-    if col.full_range() {
-        c.range = Range::Full;
-        explicit = true;
-    }
-    (c, explicit)
+        ColorCodes::from_wide(code(col.primaries), code(col.transfer_characteristics), code(col.matrix_coefficients), range)
+    });
+    let explicit = container.is_some_and(|c| Matrix::from_code(c.matrix).is_some() || Transfer::from_code(c.transfer).is_some() || c.full_range == Some(true));
+    let sources: Vec<ColorCodes> = [container, stream].into_iter().flatten().collect();
+    (crate::stream_color::resolve(w, h, &sources), explicit)
 }
 
 fn codec_label(c: &Codec) -> String {
@@ -312,11 +307,11 @@ impl MkvSource {
                     FrameRate::from_f64(1.0 / step)
                 }
             };
-            let (color, explicit) = color_of(&v, w, h);
+            ventry = sample_entry(&t.codec, &t.codec_private, t.video.as_ref(), w as u16, h as u16);
+            let (color, explicit) = color_of(&v, w, h, ventry.as_ref().and_then(|e| crate::stream_color::from_codec_config(&e.codec)));
             if explicit {
                 explicit_color = Some(color);
             }
-            ventry = sample_entry(&t.codec, &t.codec_private, t.video.as_ref(), w as u16, h as u16);
             let secs = file.duration_ns().unwrap_or(0) as f64 / 1e9;
             let bitrate = (secs > 0.0).then(|| (t.samples.iter().map(|s| s.size as u64).sum::<u64>() as f64 * 8.0 / secs) as u64);
             let ((w, h), par) = if rotation % 2 == 1 { ((h, w), (v.pixel_aspect().1, v.pixel_aspect().0)) } else { ((w, h), v.pixel_aspect()) };
@@ -387,7 +382,12 @@ impl MkvSource {
                 Some(MkvAudio { track: i, state, starts, preroll })
             })
             .collect();
-        Ok(Self { info, bytes, file, vtrack, ventry, video: GopCache::new(explicit_color).with_rotation(rotation), audios })
+        // WebM transparency: VP9 alpha in each block's BlockAdditional (ID 1)
+        let alpha = vtrack.and_then(|i| file.tracks.get(i)).filter(|t| {
+            matches!(t.codec, Codec::Vp9 { .. }) && t.video.as_ref().is_some_and(|v| v.alpha_mode != 0) && t.samples.iter().any(|s| s.addition.is_some())
+        });
+        let alpha = alpha.map(|t| Arc::new(crate::webm_alpha::AlphaLayer::new(bytes.clone(), t.samples.iter().map(|s| (s.pts, s.addition)))));
+        Ok(Self { info, bytes, file, vtrack, ventry, video: GopCache::new(explicit_color).with_rotation(rotation), alpha, audios })
     }
 
     fn read(&self, track: usize, i: usize) -> crate::Result<Vec<u8>> {
@@ -493,9 +493,15 @@ impl VideoSamples for MkvVideo<'_> {
         self.src.read(self.track, i)
     }
     fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>> {
-        match &self.src.ventry {
-            Some(e) => make_video_decoder(e),
-            None => Err(CodecError::Unsupported(format!("no decoder for {} video", codec_label(&self.src.file.tracks[self.track].codec)))),
+        let Some(e) = &self.src.ventry else {
+            return Err(CodecError::Unsupported(format!("no decoder for {} video", codec_label(&self.src.file.tracks[self.track].codec))));
+        };
+        let color = make_video_decoder(e)?;
+        let Some(layer) = &self.src.alpha else { return Ok(color) };
+        // the alpha layer always goes through our own decoder (it is luma only)
+        match crate::software_video_decoder(e) {
+            Ok(alpha) => Ok(Box::new(crate::webm_alpha::AlphaDecoder::new(color, alpha, layer.clone()))),
+            Err(_) => Ok(color),
         }
     }
 }

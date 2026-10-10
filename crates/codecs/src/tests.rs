@@ -387,6 +387,68 @@ fn mkv_vp9_422_seeks_bit_exact() {
     check_vp9_seeks("noise_vp9_422.mkv", "Matroska", "yuv422p", &["-profile:v", "1", "-deadline", "realtime", "-speed", "8"], 30);
 }
 
+/// #402: a WebM whose VP9 track carries an alpha layer (`AlphaMode` 1, a second VP9 stream in
+/// each block's `BlockAdditional`) decodes with that alpha. Frames requested out of order (seeks
+/// across key frames, then forward) match libvpx's decode exactly, colour and alpha.
+#[test]
+fn vp9_webm_alpha_layer_matches_libvpx() {
+    let (w, h, frames) = (176usize, 144usize, 30usize);
+    // the alpha changes every frame, so a picture paired with the wrong alpha frame shows
+    let Some(path) = fixture_path(
+        "alpha_vp9.webm",
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=s=176x144:r=25,format=yuva420p,geq=lum='lum(X,Y)':cb='cb(X,Y)':cr='cr(X,Y)':a='mod(X*2+N*7\\,256)'",
+            "-frames:v",
+            "30",
+            "-c:v",
+            "libvpx-vp9",
+            "-pix_fmt",
+            "yuva420p",
+            "-g",
+            "10",
+            "-deadline",
+            "realtime",
+            "-speed",
+            "8",
+            "-b:v",
+            "600k",
+        ],
+    ) else {
+        return;
+    };
+    // the reference: ffmpeg's libvpx decoder (its native VP9 decoder ignores the alpha layer)
+    let src_path = path.to_string_lossy().into_owned();
+    let Some(reference) =
+        fixture("alpha_vp9.webm.yuva420p.yuv", &["-c:v", "libvpx-vp9", "-i", &src_path, "-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", "yuva420p"])
+    else {
+        return;
+    };
+    let (luma, chroma) = (w * h, (w / 2) * (h / 2));
+    let frame_len = luma * 2 + chroma * 2;
+    if reference.len() != frame_len * frames {
+        eprintln!("libvpx reference has {} bytes, not {}; skipping", reference.len(), frame_len * frames);
+        return;
+    }
+    let bytes: Arc<[u8]> = std::fs::read(&path).unwrap().into();
+    let src = crate::open_bytes("alpha_vp9.webm", bytes).unwrap();
+    let info = src.info().clone();
+    assert_eq!(info.container, "WebM");
+    assert!(info.video.as_ref().unwrap().has_alpha);
+    let rate = info.frame_rate();
+    let order: Vec<usize> = [29, 3, 17, 12, 0, 25, 21, 9].into_iter().chain(10..frames).collect();
+    for k in order {
+        let f = src.video_frame(FrameRequest::full(rate.tick_of(k as i64))).unwrap();
+        let r = &reference[k * frame_len..(k + 1) * frame_len];
+        let filmcraft_frame::PixelData::Yuv8 { planes, alpha, .. } = &f.data else { panic!("frame {k}: not 8-bit YUV: {}", f.format_label()) };
+        assert_eq!(planes[0].as_slice(), &r[..luma], "frame {k}: luma");
+        let alpha = alpha.as_ref().unwrap_or_else(|| panic!("frame {k}: no alpha plane"));
+        assert_eq!(alpha.as_slice(), &r[luma + 2 * chroma..], "frame {k}: alpha");
+    }
+}
+
 /// Every sample flagged as sync (as in an MP4 without `stss`): the GOP cache must still start
 /// decoding at a real VP9 key frame.
 #[test]
@@ -614,4 +676,33 @@ fn apv_mp4_and_raw_bitstream_decode() {
     assert_eq!(mp4_v.pixel_format, "YUV 4:2:2 10-bit");
     let decoded_mp4 = mp4_src.video_frame(FrameRequest::full(Tick::ZERO)).expect("decode mp4 frame");
     assert_eq!(decoded_mp4.to_rgba8(), decoded_raw.to_rgba8());
+}
+
+/// ffmpeg writes MP4 without a `colr` box unless asked: the colour comes from the x265 / x264
+/// SPS VUI, and matches the same stream remuxed with `colr`.
+#[test]
+fn mp4_colour_comes_from_the_sps_without_colr() {
+    use filmcraft_color::{ColorSpace, Primaries, Range};
+    let src = |name: &str, args: &[&str]| fixture(name, args).map(|b| crate::open_bytes(name, b).expect("open"));
+    let color = |s: &filmcraft_media::SharedSource| s.info().video.as_ref().expect("video").color;
+    let lavfi = |size: &'static str| ["-f", "lavfi", "-i", size, "-t", "0.2"];
+    let x265 = "colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc:log-level=error";
+    let mut pq = lavfi("testsrc2=s=640x360:r=25").to_vec();
+    pq.extend(["-c:v", "libx265", "-tag:v", "hvc1", "-pix_fmt", "yuv420p10le", "-x265-params", x265]);
+    let Some(plain) = src("hevc_pq_no_colr.mp4", &pq) else { return };
+    assert_eq!(ColorSpace::from_info(&color(&plain)), ColorSpace::Rec2100Pq);
+    let colr_path = fixture_path("hevc_pq_no_colr.mp4", &pq).expect("fixture");
+    if let Some(with_colr) = src("hevc_pq_colr.mp4", &["-i", colr_path.to_str().expect("path"), "-c", "copy", "-movflags", "+write_colr"]) {
+        assert_eq!(color(&with_colr), color(&plain));
+    }
+    let mut full = lavfi("testsrc2=s=640x360:r=25").to_vec();
+    full.extend(["-c:v", "libx264", "-pix_fmt", "yuvj420p", "-color_range", "pc"]);
+    if let Some(s) = src("h264_full_no_colr.mp4", &full) {
+        assert_eq!(color(&s).range, Range::Full);
+    }
+    let mut sd = lavfi("testsrc2=s=720x480:r=30000/1001").to_vec();
+    sd.extend(["-c:v", "libx264", "-pix_fmt", "yuv420p", "-x264-params", "colorprim=smpte170m:transfer=smpte170m:colormatrix=smpte170m"]);
+    if let Some(s) = src("h264_sd601_no_colr.mp4", &sd) {
+        assert_eq!(color(&s).primaries, Primaries::Bt601_525);
+    }
 }

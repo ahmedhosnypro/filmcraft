@@ -84,12 +84,12 @@ Timecode and Clip Name effects also draw with the text engine.
 |---|---|---|
 | `graphics.newText` | Graphics and Titles ▸ New Layer ▸ Text (⌘T) | `text`, `position`, `box` (`[w, h]`: paragraph text in a box, `position` is its top-left corner), `clip` (add to this graphic), `vertical`, `size`, `font`, `fontStyle`, `seconds` (5), `track`, `time` |
 | `graphics.newVerticalText` | New Layer ▸ Vertical Text | as `graphics.newText`; characters stack top to bottom, paragraphs are columns right to left |
-| `graphics.newRectangle`, `graphics.newEllipse`, `graphics.newPolygon` | New Layer ▸ Rectangle (⌥⌘R), Ellipse (⌥⌘E), Polygon | `position`, `size`, `clip`; polygon `sides` (6) |
+| `graphics.newRectangle`, `graphics.newEllipse`, `graphics.newPolygon` | New Layer ▸ Rectangle (⌥⌘R), Ellipse (⌥⌘E), Polygon | `position` (the shape's centre), `size`, `clip`, `seconds` (5), `track`, `time`; polygon `sides` (6) |
 | `graphics.newFromFile` | New Layer ▸ From file… | `path` — imports the image or video and places it above the clips at the playhead (a separate clip; graphics have no media layers yet) |
-| `graphics.newShape` | (agents) | `shape` (rectangle/ellipse/polygon/path), `position`, `size`, `points`, `clip` |
+| `graphics.newShape` | (agents) | `shape` (rectangle/ellipse/polygon/path), `position` (the shape's centre), `size`, `points`, `clip` (add to this graphic), `seconds` (5), `track`, `time` |
 | `graphics.setTextType` | Text Properties ▸ Text Layer Type | `clip`, `layer`, `type` (`point` / `paragraph`); the text stays where it is |
 | `graphics.setText` | typing on the monitor | `clip`, `layer`, `text`, `merge` (coalesce one typing session into one undo step) |
-| `graphics.set` | Properties panel | `clip`, `layer`, `props` {parameter id or camelCase alias: value; choices by index or name}, `time` |
+| `graphics.set` | Properties panel | `clip`, `layer`, `props` {parameter id or camelCase alias: value; choices by index or name}, `time`, `merge` + `begin` (a drag is one undo step: send `merge: true` on every change and `begin: true` on the first change of each press) |
 | `graphics.selectLayer` | layer list / monitor click | `clip`, `layers` |
 | `graphics.deleteLayer`, `graphics.arrangeLayer` | layer list | `clip`, `layer`, `to` (front/back/forward/backward/index) |
 | `graphics.align` | Align and Transform | `align` (left/hcenter/right/top/vcenter/bottom), `to` (frame/group/selection), `layers` |
@@ -116,7 +116,7 @@ duration (a track is added if needed).
 | Tool | On the Program monitor |
 |---|---|
 | Type (T) | Click empty picture: new point-text layer with a caret. Drag on empty picture: new paragraph-text layer with that box. Click a text layer: caret there. The box of the text being typed into is red. Type; ←/→ (⌥ word, ⌘ line), ↑/↓, Home/End, Shift to select, ⌘A, ⌘C/⌘X/⌘V, Return = new line, Backspace/Delete, Esc = stop editing. Drag inside the edited text to select. |
-| Selection (V) | Click a layer to select it (box with handles and anchor point; only selected layers have a box, and a layer whose visibility is off has none and cannot be clicked); drag to move; drag the anchor point to move it alone; drag a handle to scale point text about its anchor, resize a paragraph-text box, or stretch a shape away from its opposite side (see *Point text and paragraph text*); double-click a text layer to edit it. |
+| Selection (V) | Click a layer to select it (box with handles and anchor point; only selected layers have a box, and a layer whose visibility is off has none and cannot be clicked); drag to move; drag the anchor point to move it alone; drag a handle to scale point text about its anchor, resize a paragraph-text box (see *Point text and paragraph text*), or change a shape's Size: the dragged side or corner follows the pointer while the opposite one and the anchor point stay, Scale is untouched, and Shift on a corner keeps the proportions (a path, which has no Size, stretches instead); double-click a text layer to edit it. |
 | Rectangle / Ellipse | Drag to draw a shape layer. |
 | Pen (P) | Click to place points; click the first point (or Return) to close the path; Esc cancels. |
 
@@ -248,7 +248,17 @@ panel state and the Type-tool selection.
 | `file.replaceFonts` | Graphics and Titles ▸ Replace Fonts in Projects… | `from` (family or {family, style}), `to`, `toStyle`: graphic layers, character styles, source graphics and caption tracks |
 | `graphics.fonts.used` | (query) | fonts in use with counts and whether they are missing |
 
+## Gradient fills
+
+Appearance › Fill Type › Linear Gradient paints the shape or the text with a ramp from Gradient
+Start to Gradient End. Stops are blended in linear light. The angle is degrees clockwise on
+screen; 0° runs left to right across the layer's own bounds, and the ramp turns with the layer.
+`graphics.set` accepts `fill_kind` (`solid` or `linear gradient`), `gradient_start`,
+`gradient_end` and `gradient_angle`. A per-character fill colour still paints those characters
+as a solid; the rest of the text keeps the ramp. A singular layer transform falls back to the
+solid fill colour.
+
 ## Not yet
 
-Mask-with-text, gradient fills, per-layer blend modes, Bézier curves in the pen tool (paths are
-polygons), media layers inside graphics, and template controls grouped into folders.
+Mask-with-text, per-layer blend modes, Bézier curves in the pen tool (paths are polygons), media
+layers inside graphics, and template controls grouped into folders.

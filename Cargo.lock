@@ -1667,13 +1667,20 @@ dependencies = [
 name = "filmcraft"
 version = "0.5.0"
 dependencies = [
+ "arboard",
  "chrono",
  "cpal",
  "eframe",
  "egui",
  "filmcraft-engine",
+ "filmcraft-export",
+ "filmcraft-gpu",
  "filmcraft-platform",
+ "filmcraft-project",
+ "filmcraft-render",
+ "filmcraft-time",
  "filmcraft-ui-egui",
+ "glob",
  "log",
  "muda",
  "objc2 0.6.4",
@@ -1684,6 +1691,7 @@ dependencies = [
  "sys-locale",
  "winit",
  "winresource",
+ "zbus",
 ]
 
 [[package]]
@@ -1779,11 +1787,15 @@ dependencies = [
  "filmcraft-automation",
  "filmcraft-codecs",
  "filmcraft-engine",
+ "filmcraft-export",
+ "filmcraft-gpu",
  "filmcraft-media",
  "filmcraft-mpegts",
  "filmcraft-mxf",
  "filmcraft-ogg",
  "filmcraft-platform",
+ "filmcraft-project",
+ "filmcraft-render",
  "filmcraft-time",
  "serde_json",
  "tokio",
@@ -1877,6 +1889,7 @@ dependencies = [
  "filmcraft-testkit",
  "filmcraft-text",
  "filmcraft-time",
+ "filmcraft-tts",
  "image",
  "log",
  "serde",
@@ -1968,12 +1981,14 @@ name = "filmcraft-gpu"
 version = "0.5.0"
 dependencies = [
  "filmcraft-color",
+ "filmcraft-export",
  "filmcraft-frame",
  "filmcraft-geom",
  "filmcraft-media",
  "filmcraft-project",
  "filmcraft-render",
  "filmcraft-time",
+ "image",
  "log",
  "pollster 0.4.0",
  "rayon",
@@ -2222,6 +2237,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "filmcraft-tts"
+version = "0.5.0"
+dependencies = [
+ "candle-core",
+ "candle-nn",
+ "filmcraft-audio-dsp",
+ "filmcraft-tts-text",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "zip",
+]
+
+[[package]]
+name = "filmcraft-tts-text"
+version = "0.5.0"
+dependencies = [
+ "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "filmcraft-ui-egui"
 version = "0.5.0"
 dependencies = [
@@ -2234,6 +2271,7 @@ dependencies = [
  "filmcraft-color",
  "filmcraft-edit",
  "filmcraft-engine",
+ "filmcraft-export",
  "filmcraft-frame",
  "filmcraft-geom",
  "filmcraft-gpu",
@@ -2245,6 +2283,7 @@ dependencies = [
  "filmcraft-scopes",
  "filmcraft-text",
  "filmcraft-time",
+ "filmcraft-tts",
  "image",
  "log",
  "pollster 0.4.0",
@@ -2824,6 +2863,12 @@ dependencies = [
  "smallvec",
  "vello_common",
 ]
+
+[[package]]
+name = "glob"
+version = "0.3.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
 
 [[package]]
 name = "glow"

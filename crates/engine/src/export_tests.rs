@@ -64,6 +64,34 @@ fn export_integer_parameters_cannot_wrap_or_overflow() {
     assert!(s.execute("export.resolve", json!({"bitrateKbps":8000.0, "keyframeDistance":48.0})).is_ok(), "integer-valued floats are integers");
 }
 
+#[test]
+fn wav_resolve_honours_explicit_sample_rates() {
+    let mut s = demo();
+    for rate in [4000, 192_000, 192_001, 200_000, 352_800, 384_000] {
+        let result = s.execute("export.resolve", json!({"format":"wav", "settings":{"audio":{"sample_rate":rate}}})).unwrap();
+        assert_eq!(result["settings"]["audio"]["sample_rate"], rate);
+        assert_eq!(result["output"]["sampleRate"], rate);
+    }
+    let result = s.execute("export.resolve", json!({"format":"wav", "settings":{"audio":{"sample_rate":null}}})).unwrap();
+    assert_eq!(result["output"]["sampleRate"], 48_000);
+    for rate in [0, 384_001] {
+        assert!(s.execute("export.resolve", json!({"format":"wav", "settings":{"audio":{"sample_rate":rate}}})).is_err());
+    }
+}
+
+#[test]
+fn nested_camel_case_settings_are_honoured() {
+    let mut s = demo();
+    let camel = json!({"audio":{"sampleRate":96000}, "effects":{"loudness":{"enabled":true, "targetLufs":-16}}});
+    let snake = json!({"audio":{"sample_rate":96000}, "effects":{"loudness":{"enabled":true, "target_lufs":-16}}});
+    let camel = s.execute("export.resolve", json!({"format":"wav", "settings":camel})).unwrap();
+    let snake = s.execute("export.resolve", json!({"format":"wav", "settings":snake})).unwrap();
+    assert_eq!(camel["output"]["sampleRate"], 96000);
+    assert_eq!(camel["settings"]["audio"]["sample_rate"], 96000);
+    assert_eq!(camel["settings"]["effects"]["loudness"]["target_lufs"], -16.0);
+    assert_eq!(camel["settings"], snake["settings"]);
+}
+
 fn probe(path: &str) -> Option<Value> {
     let ffprobe = filmcraft_testkit::ffprobe_or_skip("export presets")?;
     let out = std::process::Command::new(ffprobe).args(["-v", "error", "-of", "json", "-show_format", "-show_streams", path]).output().unwrap();
@@ -360,6 +388,22 @@ fn queue_orders_cancels_and_retries() {
 }
 
 #[test]
+fn queue_move_by_extreme_offsets_clamps_instead_of_overflowing() {
+    let mut s = demo();
+    let ids: Vec<u64> = (0..3)
+        .map(|_| {
+            let r = s.execute("export.queue.add", json!({"preset": "Waveform Audio 48 kHz 16-bit", "path": "queued-output/"})).unwrap();
+            r["added"][0].as_u64().unwrap()
+        })
+        .collect();
+    let order = |s: &mut Session| -> Vec<u64> { queue(s).iter().map(|i| i["id"].as_u64().unwrap()).collect() };
+    s.execute("export.queue.move", json!({"id": ids[1], "by": i64::MAX})).unwrap();
+    assert_eq!(order(&mut s), [ids[0], ids[2], ids[1]]);
+    s.execute("export.queue.move", json!({"id": ids[1], "by": i64::MIN})).unwrap();
+    assert_eq!(order(&mut s), [ids[1], ids[0], ids[2]]);
+}
+
+#[test]
 fn queue_cancels_a_running_export_and_retries_a_failed_one() {
     let mut s = demo();
     let dir = Scratch::new("queue-cancel");
@@ -450,6 +494,20 @@ fn hardware_encoding_is_off_unless_asked_for() {
     assert_eq!(setting(json!({"path": "x.mp4", "settings": {"hardwareEncoding": "auto"}})).unwrap(), Auto);
     let old: filmcraft_export::ExportSettings = serde_json::from_value(json!({"format": "h264"})).unwrap();
     assert_eq!(old.hardware_encoding, Off);
+}
+
+#[test]
+fn crf_param_picks_constant_quality() {
+    use filmcraft_export::BitrateMode::{Cbr, Crf, Vbr1Pass};
+    let s = demo();
+    let setting = |p: Value| crate::export_tools::settings_from_params(&s, &p, "file.exportMedia").map(|(_, st)| (st.bitrate_mode, st.crf));
+    assert_eq!(setting(json!({"path": "x.mp4"})).unwrap(), (Vbr1Pass, 23.0));
+    // a factor alone means CRF mode; the mode can also be named, or another one kept explicitly
+    assert_eq!(setting(json!({"path": "x.mp4", "crf": 18})).unwrap(), (Crf, 18.0));
+    assert_eq!(setting(json!({"path": "x.mp4", "bitrateMode": "crf"})).unwrap(), (Crf, 23.0));
+    assert_eq!(setting(json!({"path": "x.mp4", "bitrateMode": "cbr", "crf": 18})).unwrap(), (Cbr, 18.0));
+    let e = setting(json!({"path": "x.mp4", "bitrateMode": "abr"})).unwrap_err().to_string();
+    assert!(e.contains("crf"), "{e}");
 }
 
 #[test]

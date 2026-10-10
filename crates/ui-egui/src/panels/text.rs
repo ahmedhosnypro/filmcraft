@@ -16,6 +16,15 @@ use crate::theme::Tokens;
 
 const TABS: [&str; 3] = ["Transcript", "Captions", "Graphics"];
 
+/// The width a tab label needs: 7 px per character, which the strip was laid out with for Latin
+/// text, or the label as drawn if that is wider (Japanese glyphs are about twice as wide, and a
+/// per-character estimate alone let a label run into the next tab). Measured in the semibold the
+/// active tab uses, so selecting a tab does not move its neighbours.
+fn tab_text_width(painter: &egui::Painter, label: &str) -> f32 {
+    let drawn = painter.layout_no_wrap(label.to_string(), Tokens::semibold(12.5), Color32::WHITE).size().x;
+    (label.chars().count() as f32 * 7.0).max(drawn)
+}
+
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     ui.painter().rect_filled(rect, 0.0, t.panel_bg);
@@ -23,7 +32,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let mut x = rect.min.x + 12.0;
     for tab in TABS {
         let shown = crate::i18n::t(tab);
-        let w = shown.chars().count() as f32 * 7.0 + 16.0;
+        let text_w = tab_text_width(ui.painter(), shown);
+        let w = text_w + 16.0;
         let r = Rect::from_min_size(pos2(x, rect.min.y + 4.0), vec2(w, 24.0));
         let resp = ui.interact(r, egui::Id::new(("text-tab", tab)), Sense::click());
         let active = app.ui.text_tab == tab;
@@ -35,7 +45,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             if active { t.text } else { t.text_dim },
         );
         if active {
-            ui.painter().line_segment([pos2(r.min.x, r.max.y), pos2(r.min.x + w - 16.0, r.max.y)], Stroke::new(2.0, t.text));
+            ui.painter().line_segment([pos2(r.min.x, r.max.y), pos2(r.min.x + text_w, r.max.y)], Stroke::new(2.0, t.text));
         }
         app.auto.add(&format!("text.tab.{tab}"), r, tab);
         if resp.clicked() {
@@ -385,6 +395,22 @@ fn style_strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, track_idx: us
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(r).id_salt("caption-style"));
     child.horizontal_centered(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
+        let r = egui::ComboBox::from_id_salt(("caption-font", tr.id.0)).selected_text(&st.font).width(130.0).height(400.0).show_ui(ui, |ui| {
+            if !filmcraft_text::fonts::system_scanned() {
+                filmcraft_text::fonts::scan_system();
+            }
+            // names starting with '.' are macOS-private system faces (UI/fallback fonts, some without a space glyph)
+            for (f, _) in filmcraft_text::families().into_iter().filter(|(f, _)| !f.starts_with('.')) {
+                let resp = ui.selectable_label(f.eq_ignore_ascii_case(&st.font), &f);
+                if ui.is_rect_visible(resp.rect) {
+                    app.auto.add(&format!("text.captions.style.font.option.{f}"), resp.rect, &f);
+                }
+                if resp.clicked() {
+                    actions.push(("captions.setStyle".into(), json!({"track": tr.id.0, "font": f})));
+                }
+            }
+        });
+        app.auto.add("text.captions.style.font", r.response.rect, "Caption font");
         let mut size = st.size;
         let resp = ui.add(egui::DragValue::new(&mut size).range(8.0..=200.0).speed(0.5).suffix(" px"));
         app.auto.add("text.captions.style.size", resp.rect, "Caption size");
@@ -436,6 +462,40 @@ fn run(app: &mut FilmcraftApp, ui: &egui::Ui, actions: Vec<(String, Value)>) {
     for (cmd, p) in actions {
         if let Err(e) = crate::menus::invoke(app, &ctx, &cmd, p) {
             app.ui.status = e;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Latin labels keep the 7 px per character they were laid out with; Japanese labels are as
+    /// wide as they are drawn, so they no longer run into the next tab.
+    #[test]
+    fn tab_widths_follow_the_drawn_label() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx, &Tokens::for_kind(crate::theme::ThemeKind::default()));
+        // Japanese needs a craft-fonts build or an installed font; without one there is nothing wide to measure
+        if !crate::i18n::install_japanese_font(&ctx) {
+            return;
+        }
+        let labels = ["Transcript", "Captions", "Graphics", "文字起こし", "キャプション", "グラフィックス"];
+        let mut widths = Vec::new();
+        for _ in 0..2 {
+            // the added font is in place from the second pass
+            widths.clear();
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                for label in labels {
+                    widths.push(tab_text_width(ui.painter(), label));
+                }
+            });
+            out.textures_delta.clear();
+        }
+        assert_eq!(widths[..3], [70.0, 56.0, 56.0], "Latin tabs keep 7 px per character");
+        // 5, 6 and 7 Japanese characters of about 12.5 px each, far over the 7 px per character estimate
+        for ((width, chars), label) in widths[3..].iter().zip([5.0_f32, 6.0, 7.0]).zip(&labels[3..]) {
+            assert!(*width > chars * 7.0 * 1.5, "{label}: {width} px");
         }
     }
 }
