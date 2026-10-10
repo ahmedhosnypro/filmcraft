@@ -1536,8 +1536,22 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         // ---- appearance
         if section(ui, app, "Appearance", &t) {
             let (_, mut vui) = cx.row(ui, tl!("Fill"));
-            cx.check(&mut vui, "fill", "");
+            let fill_on = cx.check(&mut vui, "fill", "");
             cx.color(&mut vui, "fill_color");
+            if fill_on {
+                vui.add_space(6.0);
+                cx.choice(&mut vui, "fill_kind", graphic::FILL_KIND_OPTS, 130.0);
+            }
+            let fill_kind = match pv(e, "fill_kind", mt) {
+                ParamValue::Choice(c) => c,
+                _ => 0,
+            };
+            if fill_on && fill_kind == 1 {
+                let (_, mut vui) = cx.row(ui, tl!("Gradient"));
+                cx.color(&mut vui, "gradient_start");
+                cx.color(&mut vui, "gradient_end");
+                cx.number(ui, tl!("   Angle"), "gradient_angle", 0.5, (-3600.0, 3600.0), 0, " °");
+            }
             for (on, col, w, kind, label) in [
                 ("stroke", "stroke_color", "stroke_width", "stroke_type", tl!("Stroke")),
                 ("stroke2", "stroke2_color", "stroke2_width", "stroke2_type", tl!("Stroke 2")),
