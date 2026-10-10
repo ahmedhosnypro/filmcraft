@@ -1363,10 +1363,70 @@ fn build() -> Vec<CommandSpec> {
             let sel = clips_p(s, p);
             let linked = sel.iter().all(|c| s.active_sequence().and_then(|q| q.find_item(*c)).is_some_and(|(_, i)| i.link.is_some()));
             s.edit_sequence(if linked { "Unlink" } else { "Link" }, |q, ctx, _| {
-                let l = if linked { None } else { Some(ctx.alloc()) };
-                for c in &sel {
-                    if let Some((_, i)) = q.find_item_mut(*c) {
-                        i.link = l;
+                if linked {
+                    for c in &sel {
+                        if let Some((_, i)) = q.find_item_mut(*c) {
+                            i.link = None;
+                        }
+                    }
+                } else {
+                    // each selected clip with its track kind, worked out once
+                    type Spec = (ClipId, filmcraft_project::ItemId, filmcraft_time::TimeRange);
+                    let (mut v_clips, mut audio_specs): (Vec<Spec>, Vec<Spec>) = (Vec::new(), Vec::new());
+                    for c in &sel {
+                        if let Some((tid, i)) = q.find_item(*c) {
+                            if q.video_tracks.iter().any(|t| t.id == tid) {
+                                v_clips.push((*c, i.item, i.range()));
+                            } else {
+                                audio_specs.push((*c, i.item, i.range()));
+                            }
+                        }
+                    }
+                    if !audio_specs.is_empty() && v_clips.len() > 1 {
+                        let mut linked_audios = std::collections::HashSet::new();
+                        for (vid, item_id, vrange) in &v_clips {
+                            // Pair with overlapping audio clips from the same item, or overlapping audio clips if no same-item audio
+                            let matching: Vec<ClipId> = audio_specs
+                                .iter()
+                                .filter(|(aid, aitem, arange)| !linked_audios.contains(aid) && aitem == item_id && arange.overlaps(vrange))
+                                .map(|(aid, _, _)| *aid)
+                                .collect();
+                            let to_link = if !matching.is_empty() {
+                                matching
+                            } else {
+                                audio_specs
+                                    .iter()
+                                    .filter(|(aid, _, arange)| !linked_audios.contains(aid) && arange.overlaps(vrange))
+                                    .map(|(aid, _, _)| *aid)
+                                    .collect()
+                            };
+                            // a video clip with no audio partner stays unlinked: a one-member link would read as "linked"
+                            let l = (!to_link.is_empty()).then(|| ctx.alloc());
+                            if let Some((_, vi)) = q.find_item_mut(*vid) {
+                                vi.link = l;
+                            }
+                            for aid in to_link {
+                                linked_audios.insert(aid);
+                                if let Some((_, ai)) = q.find_item_mut(aid) {
+                                    ai.link = l;
+                                }
+                            }
+                        }
+                        // selected audio clips with no overlapping video stay unlinked
+                        for (aid, _, _) in audio_specs {
+                            if !linked_audios.contains(&aid)
+                                && let Some((_, ai)) = q.find_item_mut(aid)
+                            {
+                                ai.link = None;
+                            }
+                        }
+                    } else {
+                        let l = ctx.alloc();
+                        for c in &sel {
+                            if let Some((_, i)) = q.find_item_mut(*c) {
+                                i.link = Some(l);
+                            }
+                        }
                     }
                 }
                 Ok(())
