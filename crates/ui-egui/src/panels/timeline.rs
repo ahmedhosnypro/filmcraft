@@ -1147,38 +1147,6 @@ fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, rows:
             egui::Id::new(("hdr", r.track.0)),
             Sense::click(),
         );
-        app.auto.add(&format!("timeline.track.{label}.name"), resp.rect, "Track name (right-click to rename)");
-        let rename_id = egui::Id::new(("timeline-track-rename", r.track.0));
-        if resp.secondary_clicked() {
-            // Start each menu opening from the committed name, not a cancelled draft.
-            ui.data_mut(|d| d.insert_temp(rename_id, tr.name.clone()));
-        }
-        egui::Popup::context_menu(&resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
-            ui.set_min_width(220.0);
-            ui.label(tl!("Rename"));
-            let mut name: String = ui.data(|d| d.get_temp(rename_id)).unwrap_or_else(|| tr.name.clone());
-            let input = ui.add(egui::TextEdit::singleline(&mut name).desired_width(210.0));
-            app.auto.add(&format!("timeline.track.{label}.renameField"), input.rect, "New track name");
-            if resp.secondary_clicked() {
-                input.request_focus();
-            }
-            let save_on_enter = input.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-            let valid = !name.trim().is_empty();
-            ui.horizontal(|ui| {
-                let apply = ui.add_enabled(valid, egui::Button::new(tl!("Apply")));
-                app.auto.add(&format!("timeline.track.{label}.renameApply"), apply.rect, "Apply track name");
-                if (apply.clicked() || (valid && save_on_enter)) && name.trim() != tr.name {
-                    actions.push(("timeline.setTrack".into(), json!({"track": r.track.0, "name": name.trim()})));
-                    ui.close();
-                } else if apply.clicked() || (valid && save_on_enter) {
-                    ui.close();
-                }
-                if ui.button(tl!("Cancel")).clicked() {
-                    ui.close();
-                }
-            });
-            ui.data_mut(|d| d.insert_temp(rename_id, name));
-        });
         if resp.double_clicked() {
             let h = if r.kind == TrackKind::Video { &mut app.ui.timeline.video_track_h } else { &mut app.ui.timeline.audio_track_h };
             *h = if *h < 50.0 { 64.0 } else { 30.0 };
