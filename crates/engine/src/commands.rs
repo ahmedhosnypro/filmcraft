@@ -349,6 +349,24 @@ fn move_clips(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"moved": moves.iter().map(|m| m.0.0).collect::<Vec<_>>(), "overwritten": overwritten}))
 }
 
+/// Slip clips together: the media delta of each clip is scaled down by the same factor so that the
+/// most constrained clip (media end or start) still moves, and no linked partner slips further.
+pub(crate) fn slip_together(q: &mut filmcraft_project::Sequence, ctx: &mut edit::EditCtx<'_>, deltas: &[(ClipId, Tick)]) -> Result<()> {
+    let mut scale = 1.0_f64;
+    for (c, d) in deltas {
+        if d.0 == 0 {
+            continue;
+        }
+        let x = edit::slip(&mut q.clone(), *c, *d, ctx)?;
+        scale = scale.min(x.0.abs() as f64 / d.0.abs() as f64);
+    }
+    for (c, d) in deltas {
+        let dd = if scale < 1.0 { Tick((d.0 as f64 * scale).round() as i64) } else { *d };
+        edit::slip(q, *c, dd, ctx)?;
+    }
+    Ok(())
+}
+
 /// Expand a clip selection with linked partners (when linked selection is on).
 pub fn with_links(s: &Session, clips: &[ClipId]) -> Vec<ClipId> {
     let Some(seq) = s.active_sequence() else { return clips.to_vec() };
@@ -2326,17 +2344,8 @@ fn build() -> Vec<CommandSpec> {
             let clips = with_links(s, &[c]);
             s.edit_sequence("Slip", |q, ctx, _| {
                 // clamp across all linked partners, then slip them by the common delta
-                let mut dd = d;
-                for c in &clips {
-                    let x = edit::slip(&mut q.clone(), *c, dd, ctx)?;
-                    if x.abs() < dd.abs() {
-                        dd = x;
-                    }
-                }
-                for c in &clips {
-                    edit::slip(q, *c, dd, ctx)?;
-                }
-                Ok(())
+                let deltas: Vec<(ClipId, Tick)> = clips.iter().map(|c| (*c, d)).collect();
+                slip_together(q, ctx, &deltas)
             })?;
             Ok(Value::Null)
         }),
