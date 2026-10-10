@@ -973,6 +973,8 @@
 	Edit…	Editar…
 	Show graphs	Mostrar gráficos
 	Toggle animation	Activar/desactivar animación
+	Eyedropper (pick a color from the Program monitor)	Cuentagotas (tomar un color del monitor de programa)
+	Eyedropper: no picture to sample	Cuentagotas: no hay imagen de la que tomar el color
 	Add/Remove Keyframe	Añadir/quitar fotograma clave
 	Temporal Interpolation	Interpolación temporal
 	Linear	Lineal
@@ -1891,6 +1893,11 @@
 	Japanese	Japonés
 	JetBrains Mono	JetBrains Mono
 	Join Through Edits	Unir ediciones pasantes
+	Ripple Trim In	Recorte de rizo de entrada
+	Ripple Trim Out	Recorte de rizo de salida
+	Roll Edit	Edición de rodillo
+	Trim In	Recortar entrada
+	Trim Out	Recortar salida
 	Kaleidoscope	Caleidoscopio
 	Keep a recovery copy of unsaved changes	Mantener una copia de recuperación de los cambios sin guardar
 	Key Color	Color clave
@@ -3480,3 +3487,10 @@
 	New Sequence	Nueva secuencia
 	Tracks	Pistas
 	tracks	pistas
+	In	Entrada
+	Out	Salida
+	Export Markers as CSV…	Exportar marcadores como CSV…
+	Fill Type	Tipo de relleno
+	Gradient Angle	Ángulo del degradado
+	Linear Gradient	Degradado lineal
+	Solid	Sólido
