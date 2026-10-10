@@ -139,6 +139,18 @@ pub struct TypeParams {
     pub text: String,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct MediaImportParams {
+    /// Absolute paths to media files (MP4/MOV, WAV/MP3/FLAC/AIFF/Ogg, PNG/JPEG/…).
+    pub paths: Vec<String>,
+    /// Bin ID to import into (optional).
+    #[serde(default)]
+    pub bin: Option<u64>,
+    /// Import numbered stills as an image sequence (optional, default false).
+    #[serde(default)]
+    pub image_sequence: Option<bool>,
+}
+
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct ElementsParams {
     /// Only element ids starting with this prefix (e.g. `timeline.clip.`).
@@ -381,9 +393,15 @@ impl FilmcraftMcp {
         description = "Import media files by absolute path (MP4/MOV, WAV/MP3/FLAC/AIFF/Ogg, PNG/JPEG/…).",
         annotations(read_only_hint = false, destructive_hint = false, idempotent_hint = false, open_world_hint = false)
     )]
-    async fn media_import(&self, Parameters(p): Parameters<TypeParams>) -> Result<CallToolResult, McpError> {
-        let paths: Vec<&str> = p.text.split('\n').map(str::trim).filter(|s| !s.is_empty()).collect();
-        wrap(self.run("file.import", json!({"paths": paths})).await)
+    async fn media_import(&self, Parameters(p): Parameters<MediaImportParams>) -> Result<CallToolResult, McpError> {
+        let mut params = json!({"paths": p.paths});
+        if let Some(bin) = p.bin {
+            params["bin"] = json!(bin);
+        }
+        if let Some(seq) = p.image_sequence {
+            params["imageSequence"] = json!(seq);
+        }
+        wrap(self.run("file.import", params).await)
     }
 
     #[tool(
