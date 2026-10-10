@@ -162,6 +162,25 @@ fn color_from(entry: &filmcraft_isobmff::SampleEntry, w: u32, h: u32) -> ColorIn
     crate::stream_color::resolve(w, h, &sources)
 }
 
+/// Sony XAVC `rtmd` (real-time metadata) start timecode and drop-frame flag, read from the first
+/// sample. Sony stores the fields as raw decimal bytes in the sample's fixed header: hours,
+/// minutes, seconds, a drop-frame flag, then frames. The layout is proprietary and undocumented,
+/// so it is reproduced here from real footage; it is the same block ffmpeg reports as the
+/// `timecode` tag of an `rtmd` stream.
+fn rtmd_fields(sample: &[u8]) -> Option<(i64, i64, i64, i64, bool)> {
+    let f = sample.get(0x0d..0x12)?;
+    Some((f[0] as i64, f[1] as i64, f[2] as i64, f[4] as i64, f[3] != 0))
+}
+
+/// Start timecode from a Sony `rtmd` track as a frame count at `rate` (issue #460), used when the
+/// file has no `tmcd` track. `None` if there is no `rtmd` track or it has no usable first sample.
+fn rtmd_start_timecode(file: &Mp4File, bytes: &crate::Src, rate: FrameRate) -> Option<i64> {
+    let ti = file.tracks.iter().position(|t| t.entries.first().is_some_and(|e| e.format.0 == *b"rtmd"))?;
+    let sample = file.read_sample(bytes, ti, 0).ok()?;
+    let (h, m, s, f, drop) = rtmd_fields(&sample)?;
+    Some(filmcraft_time::fields_to_frames(h, m, s, f, rate, drop))
+}
+
 impl Mp4Source {
     pub fn open(name: &str, bytes: Arc<[u8]>) -> crate::Result<Self> {
         Self::open_reader(name, Arc::new(filmcraft_media::reader::MemReader(bytes)))
@@ -271,6 +290,9 @@ impl Mp4Source {
             Some(CodecConfig::Timecode(tc)) => tc.start_frame.map(|f| f as i64),
             _ => None,
         });
+        // Sony XAVC files with no `tmcd` track carry the start timecode in an `rtmd` metadata
+        // track; convert its fields to a frame count using the video frame rate.
+        let start_timecode = start_timecode.or_else(|| rtmd_start_timecode(&file, &bytes, video.as_ref()?.frame_rate));
         let info = MediaInfo {
             name: name.to_string(),
             kind: if video.is_some() { MediaKind::Movie } else { MediaKind::AudioOnly },
@@ -913,6 +935,18 @@ mod tests {
             let v = s.info().video.as_ref().expect("video");
             assert_eq!((v.pixel_format.as_str(), v.has_alpha), (want, alpha), "{}", String::from_utf8_lossy(fourcc));
         }
+    }
+
+    #[test]
+    fn rtmd_fields_parse_and_ignore_short_samples() {
+        // 03:37:12:34, non-drop (a Sony FX3/a6400 XAVC header).
+        let mut s = [0u8; 24];
+        s[0x0d..0x12].copy_from_slice(&[3, 37, 12, 0, 34]);
+        assert_eq!(rtmd_fields(&s), Some((3, 37, 12, 34, false)));
+        s[0x10] = 1;
+        assert_eq!(rtmd_fields(&s), Some((3, 37, 12, 34, true)));
+        // Too short to hold the block: no fields, no panic.
+        assert_eq!(rtmd_fields(&[0u8; 6]), None);
     }
 }
 
