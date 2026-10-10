@@ -1033,7 +1033,6 @@
 	Corner Radius	Radio de esquina
 	Polygon Sides	Lados del polígono
 	Fill	Relleno
-	Gradient	Degradado
 	Stroke	Trazo
 	Stroke 2	Trazo 2
 	Background	Fondo
@@ -3490,3 +3489,8 @@
 	tracks	pistas
 	In	Entrada
 	Out	Salida
+	Export Markers as CSV…	Exportar marcadores como CSV…
+	Fill Type	Tipo de relleno
+	Gradient Angle	Ángulo del degradado
+	Linear Gradient	Degradado lineal
+	Solid	Sólido
