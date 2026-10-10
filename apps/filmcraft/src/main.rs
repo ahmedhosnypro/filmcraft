@@ -28,6 +28,7 @@ mod args;
 mod audio;
 mod audio_in;
 mod control_server;
+mod file_filters;
 #[cfg(any(target_os = "windows", test))]
 mod graphics;
 mod logging;
@@ -199,7 +200,7 @@ fn main() -> eframe::Result {
             app.audio = Some(Box::new(audio::CpalOut::new()));
             app.hooks.pick_files = Some(Box::new(|exts: &[&str]| {
                 rfd::FileDialog::new()
-                    .add_filter(filmcraft_ui_egui::i18n::t("Media"), exts)
+                    .add_filter(filmcraft_ui_egui::i18n::t("Media"), &file_filters::extensions(exts))
                     .pick_files()
                     .unwrap_or_default()
                     .into_iter()
@@ -208,18 +209,21 @@ fn main() -> eframe::Result {
             }));
             // Link Media ▸ Locate…, Attach Proxies, Reconnect Full Resolution: one path, not imported.
             app.hooks.pick_file_for_relink = Some(Box::new(|exts: &[&str], _hint| {
-                rfd::FileDialog::new().add_filter(filmcraft_ui_egui::i18n::t("Media"), exts).pick_file().map(|p| p.to_string_lossy().to_string())
+                rfd::FileDialog::new()
+                    .add_filter(filmcraft_ui_egui::i18n::t("Media"), &file_filters::extensions(exts))
+                    .pick_file()
+                    .map(|p| p.to_string_lossy().to_string())
             }));
             app.hooks.pick_save = Some(Box::new(|name: &str| {
                 rfd::FileDialog::new()
-                    .add_filter(filmcraft_ui_egui::i18n::t("FilmCraft Project"), &["fcproj"])
+                    .add_filter(filmcraft_ui_egui::i18n::t("FilmCraft Project"), &file_filters::extensions(&["fcproj"]))
                     .set_file_name(name)
                     .save_file()
                     .map(|p| p.to_string_lossy().to_string())
             }));
             app.hooks.pick_save_as = Some(Box::new(|filter: &str, exts: &[&str], name: &str| {
                 rfd::FileDialog::new()
-                    .add_filter(filmcraft_ui_egui::i18n::t(filter), exts)
+                    .add_filter(filmcraft_ui_egui::i18n::t(filter), &file_filters::extensions(exts))
                     .set_file_name(name)
                     .save_file()
                     .map(|p| p.to_string_lossy().to_string())
@@ -238,11 +242,14 @@ fn main() -> eframe::Result {
                 window_raise::raise_without_focus();
             }));
             app.hooks.pick_open_file = Some(Box::new(|filter: &str, exts: &[&str]| {
-                rfd::FileDialog::new().add_filter(filmcraft_ui_egui::i18n::t(filter), exts).pick_file().map(|p| p.to_string_lossy().to_string())
+                rfd::FileDialog::new()
+                    .add_filter(filmcraft_ui_egui::i18n::t(filter), &file_filters::extensions(exts))
+                    .pick_file()
+                    .map(|p| p.to_string_lossy().to_string())
             }));
             app.hooks.pick_open_project = Some(Box::new(|| {
                 rfd::FileDialog::new()
-                    .add_filter(filmcraft_ui_egui::i18n::t("FilmCraft Project"), &["fcproj"])
+                    .add_filter(filmcraft_ui_egui::i18n::t("FilmCraft Project"), &file_filters::extensions(&["fcproj"]))
                     .pick_file()
                     .map(|p| p.to_string_lossy().to_string())
             }));
