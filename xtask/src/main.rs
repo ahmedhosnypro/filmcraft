@@ -13,8 +13,8 @@
 //!   what was made, reused or skipped.
 //! - `target-size [--check]`: report `<target>/` subtree sizes against a cap (`TARGET_CAP_GB`,
 //!   default 30 GB); `--check` exits non-zero over the cap so build waves can self-police.
-//! - `clean-target [--incremental|--debug|--release|--dbg]`: reclaim target-dir space — the
-//!   incremental session caches, a whole profile tree, or everything via `cargo clean`.
+//! - `clean-target [--incremental|--debug|--release|--dbg]`: reclaim target-dir space — every
+//!   profile's incremental session caches, a whole profile tree, or everything via `cargo clean`.
 //! - `ico <out.ico> <in.png>…`: pack PNGs into a Windows `.ico` (used by `packaging/icons.sh`).
 //! - `ci`: fmt check, clippy -D warnings, tests, layers, assets, wasm.
 
@@ -473,15 +473,22 @@ fn root() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().expect("xtask lives in the workspace").to_path_buf()
 }
 
-/// The workspace target dir, anchored at the workspace root: `CARGO_TARGET_DIR` may be relative
-/// and `cargo xtask` may be invoked from a member directory.
-fn target_root() -> std::path::PathBuf {
+/// The target dir cargo builds into: an absolute `CARGO_TARGET_DIR` as-is, a relative one against
+/// the current directory (the way cargo resolves env paths — `cargo xtask` may be invoked from a
+/// member directory), and `<workspace-root>/target` when unset.
+fn target_root() -> Result<std::path::PathBuf, String> {
     match std::env::var_os("CARGO_TARGET_DIR") {
         Some(dir) => {
             let p = std::path::PathBuf::from(dir);
-            if p.is_absolute() { p } else { root().join(p) }
+            if p.is_absolute() {
+                Ok(p)
+            } else {
+                let cwd =
+                    std::env::current_dir().map_err(|e| format!("target dir: cannot resolve relative CARGO_TARGET_DIR, current directory unreadable: {e}"))?;
+                Ok(cwd.join(p))
+            }
         }
-        None => root().join("target"),
+        None => Ok(root().join("target")),
     }
 }
 
@@ -532,7 +539,7 @@ fn target_size(args: &[String]) -> Result<(), String> {
         Err(std::env::VarError::NotPresent) => 30.0,
         Err(_) => return Err("target-size: TARGET_CAP_GB is not valid Unicode".into()),
     };
-    let root = target_root();
+    let root = target_root()?;
     let mut entries: Vec<(String, u64)> = Vec::new();
     let mut total = 0u64;
     if let Ok(rd) = std::fs::read_dir(&root) {
@@ -553,14 +560,14 @@ fn target_size(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-/// `clean-target [--incremental|--debug|--release|--dbg]`: reclaim target-dir space — the
-/// incremental session caches, a whole profile tree, or everything via `cargo clean`
+/// `clean-target [--incremental|--debug|--release|--dbg]`: reclaim target-dir space — every
+/// profile's incremental session caches, a whole profile tree, or everything via `cargo clean`
 /// (docs/contributing.md §2).
 fn clean_target(args: &[String]) -> Result<(), String> {
-    let sub = match args {
-        [] => None,
+    let tree = match args {
+        [] => return run(Command::new(env!("CARGO")).arg("clean")),
         [one] => match one.as_str() {
-            "--incremental" => Some("debug/incremental"),
+            "--incremental" => None,
             "--debug" => Some("debug"),
             "--release" => Some("release"),
             "--dbg" => Some("dbg"),
@@ -568,10 +575,36 @@ fn clean_target(args: &[String]) -> Result<(), String> {
         },
         _ => return Err("clean-target: at most one mode: --incremental, --debug, --release or --dbg".into()),
     };
-    let Some(sub) = sub else {
-        return run(Command::new(env!("CARGO")).arg("clean"));
+    let root = target_root()?;
+    let Some(tree) = tree else {
+        // Every profile keeps its session cache in `<target>/<profile>/incremental` (dev's
+        // `debug`, `release`, `dbg`…), so sweep all profile dirs, not just the dev one.
+        let mut reclaimed = 0u64;
+        let mut cleaned = 0usize;
+        if let Ok(rd) = std::fs::read_dir(&root) {
+            for e in rd.flatten() {
+                let Ok(ft) = e.file_type() else { continue };
+                if !ft.is_dir() {
+                    continue;
+                }
+                let inc = e.path().join("incremental");
+                if !inc.is_dir() {
+                    continue;
+                }
+                reclaimed = reclaimed.saturating_add(dir_size(&inc));
+                std::fs::remove_dir_all(&inc).map_err(|er| format!("clean-target: {}: {er}", inc.display()))?;
+                println!("clean-target: {} removed", inc.display());
+                cleaned += 1;
+            }
+        }
+        if cleaned == 0 {
+            println!("clean-target: no incremental caches under {}, nothing to do", root.display());
+        } else {
+            println!("clean-target: {cleaned} incremental cache(s) reclaimed ({})", human(reclaimed));
+        }
+        return Ok(());
     };
-    let dir = target_root().join(sub);
+    let dir = root.join(tree);
     if !dir.exists() {
         println!("clean-target: {} does not exist, nothing to do", dir.display());
         return Ok(());

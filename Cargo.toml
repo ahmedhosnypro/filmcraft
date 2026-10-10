@@ -85,9 +85,6 @@ type_complexity = "allow"
 opt-level = 1
 debug = "line-tables-only"
 
-[profile.test]
-debug = "line-tables-only"
-
 # Full debuginfo for a debugging session.
 [profile.dbg]
 inherits = "dev"

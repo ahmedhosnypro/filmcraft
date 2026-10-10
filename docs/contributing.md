@@ -63,7 +63,8 @@ The profile settings above keep a full dev+test tree at a few GB; the rest is di
 - `cargo xtask target-size` reports every subtree and the total against a 30 GB cap
   (`TARGET_CAP_GB` overrides it); `--check` exits non-zero over the cap, so run it before and
   after build waves, in every worktree (`CARGO_TARGET_DIR` is honored).
-- `cargo xtask clean-target --incremental` reclaims the session caches; `--debug`, `--release`
+- `cargo xtask clean-target --incremental` reclaims every profile's session caches
+  (`<target>/<profile>/incremental`); `--debug`, `--release`
   and `--dbg` drop whole profile trees; with no mode it runs `cargo clean` — the whole `target/`,
   `fixtures/` included, which regenerate on first use.
 - The `ci` gate's `cargo test --workspace --release` costs about 5 GB of `target/release` per
