@@ -26,6 +26,9 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("app.language.japanese", "日本語", ["Edit", "Language"], None),
     uic!("app.language.spanish", "Español", ["Edit", "Language"], None),
     uic!("app.language.portuguese", "Português (Brasil)", ["Edit", "Language"], None),
+    uic!("source.playback.toggle", "Source Play/Stop", [], None),
+    uic!("source.playback.play", "Play Source", [], None),
+    uic!("source.playback.stop", "Stop Source", [], None),
     uic!("playback.toggle", "Play/Stop", [], Some("Space")),
     uic!("playback.forward", "Shuttle Right", [], Some("L")),
     uic!("playback.stop", "Shuttle Stop", [], Some("K")),
@@ -87,8 +90,9 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("multicam.editCamerasDialog", "Edit Cameras…", [], None),
     uic!("voiceover.recordToggle", "Voice-over Record", [], None),
     uic!("voiceover.settingsDialog", "Voice-Over Record Settings…", [], None),
+    // ids follow `ThemeKind`, labels follow Settings ▸ Appearance ▸ Color Theme (`darkest`, `dark`, `light`)
     uic!("view.theme.dark", "Darkest", ["View", "Appearance"], None),
-    uic!("view.theme.medium", "Medium", ["View", "Appearance"], None),
+    uic!("view.theme.medium", "Dark", ["View", "Appearance"], None),
     uic!("view.theme.light", "Light", ["View", "Appearance"], None),
     uic!("window.workspace.editing", "Editing", ["Window", "Workspaces"], Some("Alt+Shift+1")),
     uic!("window.workspace.assembly", "Assembly", ["Window", "Workspaces"], Some("Alt+Shift+2")),
@@ -150,25 +154,55 @@ pub fn panel_command_id(p: PanelKind) -> String {
     format!("window.panel.{}", p.id())
 }
 
+/// Explicit monitor parameters override keyboard focus.
+pub fn targets_source(app: &FilmcraftApp, params: &Value) -> bool {
+    match params.get("monitor").and_then(Value::as_str) {
+        Some("source") => true,
+        Some(_) => false,
+        None => app.ui.focused == PanelKind::Source,
+    }
+}
+
 /// Execute a UI or engine command by id.
-pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: Value) -> Result<Value, String> {
+pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params: Value) -> Result<Value, String> {
+    if filmcraft_engine::source_monitor::source_command(id) && targets_source(app, &params) && params.get("target").is_none() {
+        let object = params.as_object_mut().ok_or("command parameters must be an object")?;
+        object.insert("target".into(), json!("source"));
+    }
     if matches!(id, "app.language.english" | "app.language.japanese" | "app.language.spanish" | "app.language.portuguese") {
         // Japanese needs the craft-fonts (built with CRAFT_FONTS_DIR) or a font installed on the system
         if id == "app.language.japanese" && !crate::i18n::install_japanese_font(ctx) {
             return Err("no Japanese font is installed on this system (for example Noto Sans CJK JP); the interface stays in English".into());
         }
-        app.ui.language = match id {
+        let language = match id {
             "app.language.japanese" => crate::i18n::Language::Ja,
             "app.language.spanish" => crate::i18n::Language::Es,
             "app.language.portuguese" => crate::i18n::Language::PtBr,
             _ => crate::i18n::Language::En,
         };
+        // The preference is updated in memory before it is written, so a failed write (read-only
+        // or full disk) still switches the interface; it only can't be remembered for next time.
+        let saved = app.session.execute("prefs.set", json!({"key": "general.interfaceLanguage", "value": language.code()}));
+        app.ui.language = language;
+        crate::i18n::set_current(language);
+        if let Err(e) = saved {
+            app.ui.status = tlf!("The language changed but could not be saved: {e}", e);
+        }
         let items = menu_items(app);
         if let Some(hook) = app.hooks.shortcuts_changed.as_mut() {
             hook(&items);
         }
         ctx.request_repaint();
         return Ok(json!(app.ui.language));
+    }
+    if id == "file.exportFrame" {
+        if params.get("target").is_none() {
+            let source = targets_source(app, &params);
+            params.as_object_mut().ok_or("command parameters must be an object")?.insert("target".into(), json!(if source { "source" } else { "program" }));
+        }
+        if params.get("path").is_none() {
+            return crate::panels::frame_export::open(app, ctx, &params);
+        }
     }
     if id == "perf.stats" {
         // the engine's counters plus playback, frame workers and UI timings
@@ -190,7 +224,9 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: Val
     if let Some(r) = crate::panels::keyboard::route(app, ctx, id, &params) {
         return r;
     }
-    if let Some(r) = crate::panels::trim_monitor::route_transport(app, ctx, id) {
+    if !targets_source(app, &params)
+        && let Some(r) = crate::panels::trim_monitor::route_transport(app, ctx, id)
+    {
         return r;
     }
     if let Some(r) = crate::panels::multicam::route(app, id, &params) {
@@ -233,13 +269,55 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: Val
         return r;
     }
     match id {
+        "playback.slowForward" | "playback.slowReverse" if targets_source(app, &params) => {
+            return Err("Source playback currently supports normal forward speed".into());
+        }
         "playback.slowForward" | "playback.slowReverse" => {
             app.play(if id == "playback.slowForward" { 0.25 } else { -0.25 });
             return Ok(json!({"speed": app.playback.speed}));
         }
+        "source.playback.toggle" => {
+            app.toggle_source_play()?;
+            return Ok(json!({"playing": app.source_playback.clock.playing}));
+        }
+        "source.playback.play" => {
+            app.play_source()?;
+            return Ok(json!({"playing": app.source_playback.clock.playing}));
+        }
+        "source.playback.stop" => {
+            app.stop_source();
+            return Ok(Value::Null);
+        }
+        "playback.toggle"
+            if params.get("monitor").and_then(Value::as_str) == Some("source") || (params.get("monitor").is_none() && app.ui.focused == PanelKind::Source) =>
+        {
+            app.toggle_source_play()?;
+            return Ok(json!({"playing": app.source_playback.clock.playing}));
+        }
         "playback.toggle" => {
             app.toggle_play(1.0);
             return Ok(json!({"playing": app.playback.playing}));
+        }
+        "playback.forward" if targets_source(app, &params) => {
+            app.play_source()?;
+            return Ok(json!({"playing": app.source_playback.clock.playing, "speed": 1.0}));
+        }
+        "playback.reverse" if targets_source(app, &params) => {
+            return Err("Source playback currently supports normal forward speed; use Play/Space or frame stepping".into());
+        }
+        "playhead.stepBack" | "playhead.stepForward" | "playhead.stepBack5" | "playhead.stepForward5" if targets_source(app, &params) => {
+            app.stop_source();
+            let item = app.session.state.source_item.ok_or("Open a Source clip first")?;
+            let view = filmcraft_engine::clip_ops::source_view(&app.session, item).ok_or("Source clip is unavailable")?;
+            let count = if id.ends_with('5') { i64::from(app.session.prefs.playback.step_many_frames) } else { 1 };
+            let direction = if id.contains("Back") { -1 } else { 1 };
+            let time = if view.rate.frame_duration().0 == 0 {
+                app.session.state.source_playhead
+            } else {
+                let frame = view.rate.frame_at(app.session.state.source_playhead).saturating_add(count.saturating_mul(direction));
+                view.rate.tick_of(frame)
+            };
+            return app.session.execute("source.setPlayhead", json!({"time": time.0})).map_err(|e| e.to_string());
         }
         "playback.forward" => {
             let s = if app.playback.playing && app.playback.speed > 0.0 { (app.playback.speed * 2.0).min(8.0) } else { 1.0 };
@@ -252,8 +330,20 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: Val
             return Ok(json!({"speed": app.playback.speed}));
         }
         "playback.stop" => {
-            app.stop();
+            if targets_source(app, &params) {
+                app.stop_source();
+            } else {
+                app.stop();
+            }
             return Ok(Value::Null);
+        }
+        "playback.inToOut" if targets_source(app, &params) => {
+            app.play_source_range(false, false)?;
+            return Ok(Value::Null);
+        }
+        "playback.loop" if targets_source(app, &params) => {
+            app.source_playback.clock.looping = !app.source_playback.clock.looping;
+            return Ok(json!({"loop": app.source_playback.clock.looping}));
         }
         "playback.inToOut" => {
             let seq = app.session.active_sequence();
@@ -298,7 +388,7 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: Val
         id if crate::links::url_for(id).is_some() => {
             let url = crate::links::url_for(id).unwrap_or_default();
             crate::links::open(ctx, url);
-            app.ui.status = format!("Opened {url}");
+            app.ui.status = tlf!("Opened {url}", url);
             return Ok(json!({"url": url}));
         }
         "help.shortcuts" | "app.keyboardShortcuts" => {
@@ -363,6 +453,12 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: Val
             filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
             crate::panels::sequence_settings::open(app);
             return Ok(json!({"dialog": "sequenceSettings"}));
+        }
+        // File ▸ New ▸ Sequence… (Cmd+N) opens New Sequence; with params (a clip, an agent) it
+        // makes the sequence directly
+        "file.newSequence" if params.as_object().is_none_or(|m| m.is_empty()) => {
+            crate::panels::sequence_settings::open_new(app);
+            return Ok(json!({"dialog": "newSequence"}));
         }
         "sequence.colorSettings" if params.as_object().is_none_or(|m| m.is_empty()) => {
             filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
@@ -604,13 +700,14 @@ pub fn menu_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     egui::MenuBar::new().config(egui::containers::menu::MenuConfig::new().style(crate::theme::menu_style)).ui(ui, |ui| {
         for top in MENUS {
             let mine: Vec<&MenuItem> = items.iter().filter(|i| i.path.first().map(String::as_str) == Some(top)).collect();
-            ui.menu_button(app.ui.language.tr(top), |ui| {
+            let r = ui.menu_button(app.ui.language.tr(top), |ui| {
                 ui.set_min_width(260.0);
                 if mine.is_empty() {
-                    ui.add_enabled(false, egui::Button::new("(empty)"));
+                    ui.add_enabled(false, egui::Button::new(tl!("(empty)")));
                 }
-                menu_level(ui, &mine, 1, &mut clicked);
+                menu_level(ui, &mine, 1, &mut clicked, &mut app.auto);
             });
+            app.auto.add(&format!("menu.{top}"), r.response.rect, top);
         }
     });
     if let Some(id) = clicked {
@@ -620,7 +717,7 @@ pub fn menu_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
 
 /// One menu level: items whose path ends here, and a submenu (at its first item's position) for
 /// each deeper path segment, recursively (e.g. Clip ▸ Video Options ▸ Time Interpolation).
-fn menu_level(ui: &mut egui::Ui, items: &[&MenuItem], depth: usize, clicked: &mut Option<String>) {
+fn menu_level(ui: &mut egui::Ui, items: &[&MenuItem], depth: usize, clicked: &mut Option<String>, auto: &mut crate::automation::Registry) {
     let mut subs: Vec<&str> = Vec::new();
     for it in items {
         if let Some(sub) = it.path.get(depth).map(String::as_str) {
@@ -632,16 +729,16 @@ fn menu_level(ui: &mut egui::Ui, items: &[&MenuItem], depth: usize, clicked: &mu
             let language = ui.ctx().data(|d| d.get_temp::<crate::i18n::Language>(egui::Id::new("interface-language"))).unwrap_or_default();
             ui.menu_button(language.tr(sub), |ui| {
                 ui.set_min_width(220.0);
-                menu_level(ui, &inner, depth + 1, clicked);
+                menu_level(ui, &inner, depth + 1, clicked, auto);
             });
-        } else if menu_entry(ui, it) {
+        } else if menu_entry(ui, it, auto) {
             *clicked = Some(it.id.clone());
             ui.close();
         }
     }
 }
 
-fn menu_entry(ui: &mut egui::Ui, it: &MenuItem) -> bool {
+fn menu_entry(ui: &mut egui::Ui, it: &MenuItem, auto: &mut crate::automation::Registry) -> bool {
     // checkable items leave room for a checkmark drawn at the left
     let label = if it.checked.is_some() { format!("      {}", it.label) } else { it.label.clone() };
     let mut b = egui::Button::new(label);
@@ -649,6 +746,7 @@ fn menu_entry(ui: &mut egui::Ui, it: &MenuItem) -> bool {
         b = b.shortcut_text(shortcut_text(s));
     }
     let r = ui.add_enabled(it.enabled, b);
+    auto.add(&format!("menu.{}", it.id), r.rect, &it.label);
     if it.checked == Some(true) {
         let c = r.rect.left_center() + egui::vec2(10.0, 0.0);
         let col = ui.visuals().text_color();
