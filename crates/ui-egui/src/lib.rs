@@ -143,6 +143,17 @@ pub struct HostHooks {
     /// whose Wayland compositor sends no theme to winit). Without it, or without an answer, Auto
     /// uses `egui::Context::system_theme`.
     pub system_theme: Option<SystemThemeFn>,
+    /// Files or an image on the system clipboard, for Paste in the Timeline and the Project panel
+    /// (#611). Without it Paste only pastes clips copied in FilmCraft.
+    pub clipboard_media: Option<Box<dyn FnMut() -> Option<ClipboardMedia>>>,
+}
+
+/// What [`HostHooks::clipboard_media`] found on the system clipboard.
+pub enum ClipboardMedia {
+    /// Files copied in the file manager.
+    Files(Vec<String>),
+    /// An image (a screenshot, an image copied in a browser): 8-bit RGBA, row by row.
+    Image { width: usize, height: usize, rgba: Vec<u8> },
 }
 
 /// Reads the system appearance (Settings ▸ Appearance ▸ Appearance Mode ▸ Sync with system).
@@ -302,6 +313,8 @@ pub struct FilmcraftApp {
     pub tl: panels::timeline::TlState,
     /// Commands from outside the UI (native menu bar), invoked on the UI thread.
     pub command_inbox: Option<Receiver<String>>,
+    /// A V key press (or a Ctrl+V paste) reached the app and its release hasn't yet.
+    v_down: bool,
     /// GPU compositor (when running on wgpu): device state + compositor + the egui texture it feeds.
     pub gpu: Option<GpuState>,
     /// Preview render job being watched (job id, where to start playing when it completes).
@@ -489,6 +502,7 @@ impl FilmcraftApp {
             toast: None,
             tl: Default::default(),
             command_inbox: None,
+            v_down: false,
             gpu: None,
             watched_render: None,
             applied_prefs: None,
@@ -1290,6 +1304,30 @@ impl FilmcraftApp {
         let mut fire = Vec::new();
         ctx.input_mut(|i| {
             let modifiers = i.modifiers;
+            // With no text on the system clipboard, egui-winit drops the Ctrl+V press but still
+            // passes its release: put the press back, so Paste can paste files or an image (#611).
+            let mut swallowed = None;
+            for e in &i.events {
+                match e {
+                    egui::Event::Key { key: egui::Key::V, pressed, modifiers: m, .. } => {
+                        if !pressed && !self.v_down {
+                            swallowed = Some(*m);
+                        }
+                        self.v_down = *pressed;
+                    }
+                    egui::Event::Paste(_) if modifiers.command => self.v_down = true,
+                    _ => {}
+                }
+            }
+            if let Some(m) = swallowed {
+                i.events.push(egui::Event::Key {
+                    key: egui::Key::V,
+                    physical_key: Some(egui::Key::V),
+                    pressed: true,
+                    repeat: false,
+                    modifiers: m | egui::Modifiers::COMMAND,
+                });
+            }
             clipboard_events_as_keys(&mut i.events, modifiers);
             let panel = self.bindings.iter().filter(|b| b.3.as_deref() == Some(focused));
             let app_wide = self.bindings.iter().filter(|b| b.3.is_none());
