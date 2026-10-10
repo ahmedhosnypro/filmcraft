@@ -462,12 +462,7 @@ mod tests {
     fn literal_angle_brackets_are_not_discarded_as_markup() {
         let literal = "2 < 3 > 1, x < y > z, and 5 <7> 6";
         let doc = Document {
-            cues: vec![Cue {
-                start: FrameRate::FPS_25.tick_of(25),
-                end: FrameRate::FPS_25.tick_of(75),
-                text: literal.into(),
-                ..Default::default()
-            }],
+            cues: vec![Cue { start: FrameRate::FPS_25.tick_of(25), end: FrameRate::FPS_25.tick_of(75), text: literal.into(), ..Default::default() }],
             ..Default::default()
         };
         let encoded = write(&doc, Some(FrameRate::FPS_25));

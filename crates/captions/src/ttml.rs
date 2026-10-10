@@ -578,7 +578,8 @@ mod tests {
         assert!(parse_time("00:00:01:12.1", subframes).is_some());
         assert_eq!(parse_time("00:00:01:12.2", subframes), None);
         // Bad cues must not wrap to a plausible but unrelated timeline position.
-        let xml = r#"<tt xmlns="http://www.w3.org/ns/ttml"><body><div><p begin="999999999999999s" end="2s">Bad</p><p begin="1s" end="2s">Good</p></div></body></tt>"#;
+        let xml =
+            r#"<tt xmlns="http://www.w3.org/ns/ttml"><body><div><p begin="999999999999999s" end="2s">Bad</p><p begin="1s" end="2s">Good</p></div></body></tt>"#;
         let doc = parse(xml).expect("well-formed TTML");
         assert_eq!(doc.cues.len(), 1);
         assert_eq!(doc.cues[0].text, "Good");

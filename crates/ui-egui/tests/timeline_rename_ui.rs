@@ -30,7 +30,9 @@ fn rename_from_video_track_header_is_undoable() {
     let mut s = Session::default();
     s.execute("file.openDemoProject", json!({})).expect("demo project");
     let mut h = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_step_dt(1.0 / 60.0).build_eframe(move |_cc| FilmcraftApp::new(s));
-    for _ in 0..5 { step(&mut h); }
+    for _ in 0..5 {
+        step(&mut h);
+    }
     let original = h.state().session.active_sequence().expect("active sequence").video_tracks[0].name.clone();
     let id = h.state().session.active_sequence().expect("active sequence").video_tracks[0].id.0;
     click(&mut h, "timeline.track.V1.name", egui::PointerButton::Secondary);

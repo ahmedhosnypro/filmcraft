@@ -311,13 +311,8 @@ fn dragging_in_the_trim_monitor_trims_without_hanging() {
     d.frames(2);
     // the Program panel shows the two-up Trim Monitor once an edit point is selected
     let els = d.ok("ui.elements", json!({"prefix": "trimMonitor."}));
-    let out = els
-        .as_array()
-        .expect("elements")
-        .iter()
-        .find(|e| e["id"] == "trimMonitor.outgoing")
-        .unwrap_or_else(|| panic!("trim monitor not shown: {els}"))
-        .clone();
+    let out =
+        els.as_array().expect("elements").iter().find(|e| e["id"] == "trimMonitor.outgoing").unwrap_or_else(|| panic!("trim monitor not shown: {els}")).clone();
     let r: Vec<f32> = out["rect"].as_array().expect("rect").iter().map(|v| v.as_f64().expect("number") as f32).collect();
     let (cx, cy) = (r[0] + r[2] / 2.0, r[1] + r[3] / 2.0);
     // about 66 px of drag = the 6 pt threshold + 60 px of motion, at 6 px per frame;

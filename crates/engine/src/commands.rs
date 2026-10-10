@@ -2602,7 +2602,8 @@ fn build() -> Vec<CommandSpec> {
                         };
                         (keyframes, v)
                     };
-                    if e.effect == "ultra_key" && pid == "setting"
+                    if e.effect == "ultra_key"
+                        && pid == "setting"
                         && let ParamValue::Choice(setting) = v
                         && let Some(rows) = filmcraft_project::effect::ultra_key_setting(setting)
                     {
