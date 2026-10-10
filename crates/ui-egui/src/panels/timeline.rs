@@ -1983,10 +1983,7 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
             Drag::Transition { id, edge, from, start, duration } => {
                 let delta = rate.snap_nearest(t_here - from);
                 let span = seq.all_tracks().find_map(|tr| {
-                    tr.transitions
-                        .iter()
-                        .find(|x| x.id == id)
-                        .and_then(|x| filmcraft_edit::transitions::drag_span(tr, x, edge, delta, rate.frame_duration(), |t| rate.snap(t)))
+                    tr.transitions.iter().find(|x| x.id == id).and_then(|x| filmcraft_edit::transitions::drag_span(tr, x, edge, delta, rate.frame_duration()))
                 });
                 let (start, duration) = span.unwrap_or((start, duration));
                 Some(Drag::Transition { id, edge, from, start, duration })

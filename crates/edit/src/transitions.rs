@@ -154,12 +154,13 @@ pub fn set_span(seq: &mut Sequence, id: TransitionId, start: Tick, duration: Tic
 }
 
 /// Where dragging a transition by `delta` in the Timeline puts it, as `(start, duration)`. Its
-/// middle (`edge` None) slides it over the cut. An end changes its duration: a Center at Cut
-/// transition grows or shrinks on both sides and stays centred on the cut (its alignment says how
-/// it changes length), any other keeps its other end where it is. A fade to or from nothing keeps
+/// middle (`edge` None) slides it over the cut. An end trims that end only (Premiere shows the
+/// Trim-In / Trim-Out icon there): the other end stays, whatever the alignment, so a Center at
+/// Cut transition becomes Custom Start. (A typed duration, in Effect Controls or Set Transition
+/// Duration, follows the alignment instead: see [`start_for`].) A fade to or from nothing keeps
 /// its clip-edge end, and does not slide. Always clamped to where it may be ([`bounds`], over the
-/// cut, at least one `frame`); `snap` puts a centred start on a frame. `None` when its clips are gone.
-pub fn drag_span(track: &Track, tr: &Transition, edge: Option<Edge>, delta: Tick, frame: Tick, snap: impl Fn(Tick) -> Tick) -> Option<(Tick, Tick)> {
+/// cut, at least one `frame`). `None` when its clips are gone.
+pub fn drag_span(track: &Track, tr: &Transition, edge: Option<Edge>, delta: Tick, frame: Tick) -> Option<(Tick, Tick)> {
     let (lo, cut, hi) = bounds(track, tr)?;
     let frame = frame.max(Tick(1));
     let (s0, e0, d0) = (tr.start, tr.end(), tr.duration);
@@ -170,13 +171,6 @@ pub fn drag_span(track: &Track, tr: &Transition, edge: Option<Edge>, delta: Tick
         None => {
             let (min_s, max_s) = (lo.max(cut - d0), (hi - d0).min(cut));
             if min_s > max_s { unchanged } else { Some(((s0 + delta).clamp(min_s, max_s), d0)) }
-        }
-        Some(e) if !one_sided && alignment(tr, cut, frame) == Alignment::Center => {
-            // dragging an end by n frames moves both ends by n: the duration changes by 2n
-            let grow = if e == Edge::In { Tick(0) - delta } else { delta };
-            let max_d = Tick((cut - lo).min(hi - cut).0.saturating_mul(2));
-            let d = Tick(d0.0.saturating_add(grow.0.saturating_mul(2))).clamp(frame, max_d.max(frame));
-            Some((snap(cut - d.mul_ratio(1, 2)), d))
         }
         Some(Edge::In) if tr.from.is_none() => unchanged,
         Some(Edge::In) => {
@@ -349,18 +343,19 @@ mod tests {
 
     fn drag(q: &Sequence, id: u64, edge: Option<Edge>, frames: i64) -> (i64, i64) {
         let (t, x) = find(q, TransitionId(id)).unwrap();
-        let (st, d) = drag_span(t, x, edge, f(frames), f(1), |t| R.snap(t)).unwrap();
+        let (st, d) = drag_span(t, x, edge, f(frames), f(1)).unwrap();
         (R.frame_at(st), R.frame_at(d))
     }
 
     #[test]
     fn dragging_a_transition() {
         let mut q = seq();
-        // centred (36..60 over the cut at 48): an end grows / shrinks it on both sides
-        assert_eq!(drag(&q, 1, Some(Edge::In), -4), (32, 32));
-        assert_eq!(drag(&q, 1, Some(Edge::Out), -10), (46, 4));
-        assert_eq!(drag(&q, 1, Some(Edge::Out), -100), (47, 1), "at least a frame (centred: it starts on the frame before the cut)");
-        assert_eq!(drag(&q, 1, Some(Edge::Out), 100), (0, 96), "at most both clips");
+        // centred (36..60 over the cut at 48): an end trims that end only, the other stays
+        assert_eq!(drag(&q, 1, Some(Edge::In), -4), (32, 28));
+        assert_eq!(drag(&q, 1, Some(Edge::Out), -10), (36, 14));
+        assert_eq!(drag(&q, 1, Some(Edge::Out), -100), (36, 12), "the end stops at the cut");
+        assert_eq!(drag(&q, 1, Some(Edge::Out), 100), (36, 60), "and at the incoming clip's end");
+        assert_eq!(drag(&q, 1, Some(Edge::In), -100), (0, 60), "the start at the outgoing clip's start");
         // the middle slides it, staying over the cut and inside the clips
         assert_eq!(drag(&q, 1, None, 5), (41, 24));
         assert_eq!(drag(&q, 1, None, 100), (48, 24));
@@ -380,7 +375,7 @@ mod tests {
         // whatever comes out is a span set_span accepts
         for (id, edge, n) in [(1, Some(Edge::In), -70), (1, None, 33), (2, Some(Edge::Out), 99), (3, Some(Edge::In), -99)] {
             let (t, x) = find(&q, TransitionId(id)).unwrap();
-            let (st, d) = drag_span(t, x, edge, f(n), f(1), |t| R.snap(t)).unwrap();
+            let (st, d) = drag_span(t, x, edge, f(n), f(1)).unwrap();
             let mut c = q.clone();
             set_span(&mut c, TransitionId(id), st, d, f(1), f(1)).unwrap();
         }

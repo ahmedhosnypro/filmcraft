@@ -177,8 +177,8 @@ fn click_selects_a_transition_and_delete_removes_it() {
     assert_eq!(d.exec("sequence.inspect", json!({}))["transitionSelection"], json!([]));
 }
 
-/// Dragging a centred transition's end changes its duration on both sides of the cut (#224);
-/// dragging its middle slides it over the cut (Custom Start). Each drag is one undo step.
+/// Dragging a transition's end trims that end only (#224); dragging its middle slides it over the
+/// cut (Custom Start). Each drag is one undo step.
 #[test]
 fn dragging_a_transition_end_or_middle() {
     let mut d = Driver::demo();
@@ -192,9 +192,9 @@ fn dragging_a_transition_end_or_middle() {
     let x1 = d.transition(c.id).unwrap();
     let (s1, d1) = (x1["start"].as_i64().unwrap(), x1["duration"].as_i64().unwrap());
     assert!(d1 > c.duration, "dragging the end out lengthens it: {} -> {d1}", c.duration);
-    assert_eq!(x1["align"], json!("center"), "a centred transition stays centred");
-    assert!((s1 + d1 / 2 - c.cut).abs() <= frame, "still centred on the cut");
-    assert_eq!((d1 - c.duration) % (2 * frame), 0, "both ends moved by whole frames");
+    assert_eq!(s1, c.start, "the start stays where it was");
+    assert_eq!((d1 - c.duration) % frame, 0, "by whole frames");
+    assert_eq!(x1["align"], json!("custom"), "no longer centred: Custom Start");
     // the middle: slide it right of centre
     let (x, y, w, h, _) = d.find(&format!("timeline.transition.{}", c.id)).unwrap();
     let (mx, my) = (x + w / 2.0, y + h / 2.0);
@@ -205,7 +205,8 @@ fn dragging_a_transition_end_or_middle() {
     assert_eq!(x2["duration"].as_i64(), Some(d1), "sliding keeps the duration");
     assert!(x2["start"].as_i64().unwrap() > s1, "and moves it right");
     assert!(x2["start"].as_i64().unwrap() <= c.cut, "still over the cut");
-    assert_eq!(x2["align"], json!("custom"));
+    // off-centre (Custom Start), or Start at Cut if the slide reached the cut, where it stops
+    assert!(matches!(x2["align"].as_str(), Some("custom" | "start")), "{}", x2["align"]);
     // two drags, two undo steps
     d.exec("edit.undo", json!({}));
     d.exec("edit.undo", json!({}));
