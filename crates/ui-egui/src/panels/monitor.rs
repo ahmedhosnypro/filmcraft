@@ -284,6 +284,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
         monitor_view::pan_input(app, ui, which, video_area, pic);
     }
     if which == Which::Program && show_picture {
+        eyedropper(app, ui, &pic_resp, pic, target, rate, time);
         crate::panels::graphics::monitor_overlay(app, ui, pic, frame_size);
         crate::panels::masks::monitor_overlay(app, ui, pic, frame_size);
     }
@@ -305,8 +306,19 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
     // ---- controls row: timecode | zoom | res | wrench | duration
     let row1 = Rect::from_min_size(pos2(rect.min.x + 14.0, rect.max.y - controls_h + 2.0), vec2(rect.width() - 28.0, 26.0));
     let tc = format_time(time, rate, drop_frame, TimeDisplay::Timecode, 48000);
-    ui.painter().text(pos2(row1.min.x, row1.center().y), Align2::LEFT_CENTER, &tc, Tokens::timecode(), t.timecode);
-    app.auto.add(&format!("{prefix}.timecode"), Rect::from_min_size(row1.min, vec2(110.0, row1.height())), &tc);
+    let tc_rect = Rect::from_min_size(row1.min, vec2(110.0, row1.height()));
+    let min = if which == Which::Program { Tick::ZERO } else { origin };
+    match crate::widgets::timecode_field(ui, egui::Id::new((prefix, "timecode")), tc_rect, &tc, time, min, rate, drop_frame, t.timecode) {
+        Some(Ok(to)) => {
+            let cmd = if which == Which::Program { "playhead.set" } else { "source.setPlayhead" };
+            if let Err(e) = app.session.execute(cmd, json!({"time": to.0})) {
+                app.ui.status = e.to_string();
+            }
+        }
+        Some(Err(e)) => app.ui.status = e,
+        None => {}
+    }
+    app.auto.add(&format!("{prefix}.timecode"), tc_rect, &tc);
     let dur_tc = format_time(mark_out.map(|o| o + rate.frame_duration()).unwrap_or(duration) - range_start, rate, drop_frame, TimeDisplay::Timecode, 48000);
     ui.painter().text(pos2(row1.max.x, row1.center().y), Align2::RIGHT_CENTER, &dur_tc, Tokens::timecode(), t.text_dim);
     // zoom + resolution dropdowns centred-ish
@@ -453,6 +465,99 @@ fn cpu_texture(
         }
         None => (app.texture_existing(name).map(|(id, _)| id), app.texture_key(name)),
     }
+}
+
+/// A click of an armed eyedropper waiting for its frame to render.
+#[derive(Clone)]
+struct EyedropperPick {
+    /// The clicked point in the picture, 0..1 across and down.
+    uv: (f32, f32),
+    key: FrameKey,
+    time: Tick,
+    /// The project with the armed effect switched off, so a colour that effect keys out can be picked.
+    project: std::sync::Arc<filmcraft_project::Project>,
+}
+
+/// Output scale of the frame an eyedropper samples (half size is plenty and quick to render).
+const EYEDROPPER_SCALE: f32 = 0.5;
+
+/// Eyedropper: while a colour parameter's eyedropper is armed (Effect Controls), the Program picture
+/// takes a crosshair and a click fills that parameter with the colour under the pointer. The colour is
+/// read from a render of the sequence at the playhead with the armed effect switched off (an Ultra Key
+/// has already removed the green it is asked to key); Esc disarms.
+fn eyedropper(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response, pic: Rect, target: Target, rate: filmcraft_time::FrameRate, time: Tick) {
+    let Some(armed) = app.ui.eyedropper.clone() else { return };
+    let ctx = ui.ctx().clone();
+    let pending_id = egui::Id::new("eyedropper-pending");
+    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        app.ui.eyedropper = None;
+        ctx.data_mut(|d| d.remove::<EyedropperPick>(pending_id));
+        return;
+    }
+    if resp.hovered() {
+        ctx.set_cursor_icon(egui::CursorIcon::Crosshair);
+    }
+    if resp.clicked()
+        && let (Some(pos), Target::Sequence(seq)) = (resp.interact_pointer_pos(), target)
+        && pic.width() > 0.0
+        && pic.height() > 0.0
+    {
+        let uv = (((pos.x - pic.min.x) / pic.width()).clamp(0.0, 1.0), ((pos.y - pic.min.y) / pic.height()).clamp(0.0, 1.0));
+        let mut project = (*app.session.project).clone();
+        if let Some(e) =
+            project.sequence_mut(seq).and_then(|q| q.find_item_mut(filmcraft_project::ClipId(armed.clip))).and_then(|(_, it)| it.effects.get_mut(armed.effect))
+        {
+            e.enabled = false;
+        }
+        let frame = rate.frame_at(time);
+        // a revision of its own, so this render never replaces what the monitor caches
+        let revision = app.session.revision ^ 0x5eed_d70b_0000_0000 ^ armed.clip.rotate_left(17) ^ armed.effect as u64;
+        let key = FrameKey { target, frame, size: (EYEDROPPER_SCALE * 1000.0) as u32, revision, draft: false };
+        ctx.data_mut(|d| d.insert_temp(pending_id, EyedropperPick { uv, key, time: rate.tick_of(frame), project: std::sync::Arc::new(project) }));
+    }
+    let Some(pick) = ctx.data(|d| d.get_temp::<EyedropperPick>(pending_id)) else { return };
+    app.frames.request(pick.key, pick.time, EYEDROPPER_SCALE, &pick.project, 0);
+    let Some(img) = app.frames.get(&pick.key) else {
+        ctx.request_repaint();
+        return;
+    };
+    ctx.data_mut(|d| d.remove::<EyedropperPick>(pending_id));
+    app.ui.eyedropper = None;
+    let Some(rgb) = sample_rgb(&img, pick.uv) else {
+        app.ui.status = tl!("Eyedropper: no picture to sample").to_string();
+        return;
+    };
+    // the parameter stores linear values, like the colour picker beside it
+    let lin = egui::Rgba::from(Color32::from_rgb(rgb[0], rgb[1], rgb[2]));
+    let mut params = json!({"clip": armed.clip, "effect": armed.effect, "param": armed.param, "value": [lin.r(), lin.g(), lin.b(), 1.0]});
+    if let Some(k) = armed.mask {
+        params["mask"] = json!(k);
+    }
+    if let Err(e) = app.session.execute("effects.setParam", params) {
+        app.ui.status = e.to_string();
+    }
+}
+
+/// The average colour of the 5×5 pixels around `uv` (0..1 across and down) of a frame, so a noisy
+/// green screen gives its true green. `None` for an empty frame.
+fn sample_rgb(img: &crate::frames::Rgba, uv: (f32, f32)) -> Option<[u8; 3]> {
+    if img.w == 0 || img.h == 0 || img.px.len() < img.w.saturating_mul(img.h).saturating_mul(4) {
+        return None;
+    }
+    let cx = ((uv.0 * img.w as f32) as usize).min(img.w - 1);
+    let cy = ((uv.1 * img.h as f32) as usize).min(img.h - 1);
+    let (mut sum, mut n) = ([0u32; 3], 0u32);
+    for y in cy.saturating_sub(2)..=(cy + 2).min(img.h - 1) {
+        for x in cx.saturating_sub(2)..=(cx + 2).min(img.w - 1) {
+            let i = (y * img.w + x) * 4;
+            for (c, s) in sum.iter_mut().enumerate() {
+                *s += u32::from(*img.px.get(i + c)?);
+            }
+            n += 1;
+        }
+    }
+    let avg = |c: usize| u8::try_from(sum[c].checked_div(n)?).ok();
+    Some([avg(0)?, avg(1)?, avg(2)?])
 }
 
 pub fn quantize_scale(s: f32) -> f32 {
@@ -674,8 +779,41 @@ fn source_nav(app: &mut FilmcraftApp, cmd: &str) {
     let t = match cmd {
         "src.goIn" => v.mark_in.unwrap_or(v.start),
         "src.goOut" => v.mark_out.unwrap_or(v.end - rate.frame_duration()),
-        "src.stepBack" => cur - rate.frame_duration(),
-        _ => cur + rate.frame_duration(),
+        _ if rate.frame_duration() == Tick::ZERO => cur,
+        "src.stepBack" => rate.tick_of(rate.frame_at(cur).saturating_sub(1)),
+        _ => rate.tick_of(rate.frame_at(cur).saturating_add(1)),
     };
     let _ = app.session.execute("source.setPlayhead", json!({"time": t.0}));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::frames::Rgba;
+
+    fn flat(w: usize, h: usize, rgba: [u8; 4]) -> Rgba {
+        Rgba { w, h, px: rgba.iter().copied().cycle().take(w * h * 4).collect() }
+    }
+
+    #[test]
+    fn eyedropper_averages_the_pixels_around_the_point() {
+        let mut img = flat(8, 8, [0, 200, 0, 255]);
+        // one noisy pixel next to the centre is averaged away, not picked
+        img.px[(4 * 8 + 5) * 4 + 1] = 0;
+        assert_eq!(sample_rgb(&img, (0.5, 0.5)), Some([0, 192, 0]));
+    }
+
+    #[test]
+    fn eyedropper_clamps_to_the_picture_edges() {
+        let img = flat(4, 3, [10, 20, 30, 255]);
+        for uv in [(0.0, 0.0), (1.0, 1.0), (0.999, 0.0), (0.0, 0.999)] {
+            assert_eq!(sample_rgb(&img, uv), Some([10, 20, 30]));
+        }
+    }
+
+    #[test]
+    fn eyedropper_rejects_empty_and_truncated_frames() {
+        assert_eq!(sample_rgb(&Rgba { w: 0, h: 0, px: vec![] }, (0.5, 0.5)), None);
+        assert_eq!(sample_rgb(&Rgba { w: 4, h: 4, px: vec![0; 10] }, (0.5, 0.5)), None);
+    }
 }
