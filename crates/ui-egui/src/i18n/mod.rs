@@ -250,34 +250,21 @@ pub fn craft_japanese_font() -> bool {
             .any(|f| f.info.origin == filmcraft_text::fonts::CRAFT_ORIGIN && JAPANESE_SAMPLE.chars().all(|c| f.has_char(c)))
 }
 
-/// Put the system Japanese face before the Chinese fallback, but after the app's Latin faces.
-/// Installing it repeatedly must not accumulate duplicate entries in any UI font family.
-fn prioritize_system_japanese(fonts: &mut egui::FontDefinitions) {
-    for family in crate::theme::font_families() {
-        let stack = fonts.families.entry(family).or_default();
-        stack.retain(|name| name != JAPANESE_FONT);
-        let before_chinese = stack
-            .iter()
-            .position(|name| name == "system-chinese" || name.starts_with("craft:"))
-            .unwrap_or(stack.len());
-        stack.insert(before_chinese, JAPANESE_FONT.into());
-    }
-}
-
 /// Japanese for the interface: true when built with the craft-fonts (already installed by
-/// `theme::install`). Otherwise put the installed system Japanese face before the Chinese
-/// fallbacks, preserving Latin fonts and the Chinese fallback for characters it alone covers.
-/// Returns false when no Japanese font is installed; reapply after `theme::install` resets fonts.
+/// `theme::install`). Otherwise add the system's Japanese font as the last fallback of every theme font family, from the next
+/// pass on. Returns false (and changes nothing) when no Japanese font is installed. Call it again
+/// after `theme::install`, which replaces the font definitions.
 pub fn install_japanese_font(ctx: &egui::Context) -> bool {
     if craft_japanese_font() {
         return true;
     }
     let Some(font) = system_japanese_font() else { return false };
-    let mut fonts = ctx.fonts(|f| f.definitions().clone());
-    fonts.font_data.insert(JAPANESE_FONT.into(), font);
-    prioritize_system_japanese(&mut fonts);
-    // Apply on the next pass, including when a theme change reinstalled the Latin fonts.
-    ctx.set_fonts(fonts);
+    let families = crate::theme::font_families()
+        .into_iter()
+        .map(|family| egui::epaint::text::InsertFontFamily { family, priority: egui::epaint::text::FontPriority::Lowest })
+        .collect();
+    // queued for the next pass (works before the first frame); a no-op when already installed
+    ctx.add_font(egui::epaint::text::FontInsert { name: JAPANESE_FONT.into(), data: (*font).clone(), families });
     true
 }
 
@@ -291,29 +278,6 @@ pub fn chinese_font_available() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn system_japanese_fallback_precedes_chinese_in_all_ui_families() {
-        let mut fonts = egui::FontDefinitions::default();
-        for family in crate::theme::font_families() {
-            let stack = fonts.families.entry(family).or_default();
-            stack.insert(0, "app-latin".into());
-            stack.push("craft:chinese fallback".into());
-            stack.push("system-chinese".into());
-        }
-        // Theme reinstalls and repeated language selections must not duplicate the font.
-        prioritize_system_japanese(&mut fonts);
-        prioritize_system_japanese(&mut fonts);
-        for family in crate::theme::font_families() {
-            let stack = &fonts.families[&family];
-            assert_eq!(stack.first().map(String::as_str), Some("app-latin"), "{family:?}");
-            let japanese = stack.iter().position(|name| name == JAPANESE_FONT).unwrap();
-            let craft_chinese = stack.iter().position(|name| name == "craft:chinese fallback").unwrap();
-            let system_chinese = stack.iter().position(|name| name == "system-chinese").unwrap();
-            assert!(japanese > 0 && japanese < craft_chinese && japanese < system_chinese, "{family:?}: {stack:?}");
-            assert_eq!(stack.iter().filter(|name| name.as_str() == JAPANESE_FONT).count(), 1);
-        }
-    }
 
     #[test]
     fn catalogs_are_well_formed() {
