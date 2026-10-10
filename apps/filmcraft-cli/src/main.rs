@@ -233,9 +233,15 @@ async fn cli() {
     }
     register_hardware_decoders();
     let a = Args::parse(std::env::args().skip(1));
+    // `--help` anywhere (`filmcraft-cli --help`, `filmcraft-cli export --help`) prints the reference:
+    // the parser takes it as a flag option, so it never reaches the subcommand match.
+    if a.flag("--help") {
+        out!("{HELP}");
+        return;
+    }
     let Some(cmd) = a.pos(0) else { usage("missing subcommand") };
     match cmd {
-        "help" | "--help" | "-h" => out!("{HELP}"),
+        "help" | "-h" => out!("{HELP}"),
         "version" => outln!("filmcraft-cli {}", env!("CARGO_PKG_VERSION")),
         "probe" => {
             let path = a.pos(1).unwrap_or_else(|| usage("probe <media> [--image-sequence]"));
