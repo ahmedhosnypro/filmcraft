@@ -1594,20 +1594,41 @@ pub fn export(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, so
     let batch = rayon::current_num_threads().clamp(2, 16) as i64;
     let (bytes, nframes) = match settings.format {
         Format::Wav | Format::Aiff => {
+            let mut a = audio_out::AudioOut::new(project.clone(), seq, settings, range)?;
+            let (ch, sr, bits) = (a.channels as u16, a.sr, settings.audio.bits);
+            let container = if settings.format == Format::Wav { pcm::PcmContainer::Wav } else { pcm::PcmContainer::Aiff };
+            let frames = a.remaining();
+            // the sizes are known up front: refuse an AIFF that cannot hold them before measuring
+            let head = pcm::header(container, ch, sr, bits, frames).map_err(ExportError::Unsupported)?;
+            // one second per chunk: memory stays flat however long the range is
+            let chunk = i64::from(sr.max(1));
             if !settings.part_of_batch {
-                progress.total.store(1, Ordering::Relaxed);
+                progress.total.store(frames.div_ceil(chunk as u64).max(1), Ordering::Relaxed);
                 progress.set_status(format!("Exporting audio ({})", settings.format.label()));
             }
-            let mut a = audio_out::AudioOut::new(project.clone(), seq, settings, range)?;
             a.measure(settings, sources, &cancelled)?;
             *progress.loudness.lock().unwrap_or_else(|e| e.into_inner()) = a.loudness;
-            let planar = a.rest(sources).unwrap_or_else(|| vec![Vec::new(); a.channels]);
-            let inter = audio_out::interleave(&planar);
-            let (ch, sr, bits) = (a.channels as u16, a.sr, settings.audio.bits);
-            let data = if settings.format == Format::Wav { pcm::write_wav(&inter, ch, sr, bits) } else { pcm::write_aiff(&inter, ch, sr, bits) };
-            let n = write_output(settings, &settings.path, data)?;
-            progress.done.store(1, Ordering::Relaxed);
-            (n, planar.first().map_or(0, Vec::len) as u64)
+            let mut out = Out::create(settings)?;
+            let io = |e: std::io::Error| ExportError::Io(e.to_string());
+            out.write_all(&head).map_err(io)?;
+            let mut buf = Vec::new();
+            while let Some(planar) = a.pull(a.out.saturating_add(chunk), sources) {
+                if cancelled() {
+                    return Err(ExportError::Cancelled);
+                }
+                buf.clear();
+                pcm::encode(container, &audio_out::interleave(&planar), bits, &mut buf);
+                out.write_all(&buf).map_err(io)?;
+                if !settings.part_of_batch {
+                    progress.done.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+            out.write_all(pcm::pad(frames, ch, bits)).map_err(io)?;
+            let n = out.finish(settings)?;
+            if settings.part_of_batch {
+                progress.done.store(1, Ordering::Relaxed);
+            }
+            (n, frames)
         }
         Format::PngSequence | Format::TiffSequence | Format::BmpSequence | Format::Gif => {
             let pipe = pipeline::Pipeline::new(project.clone(), seq, settings, false)?;
