@@ -880,7 +880,7 @@ impl Default for SequenceSettingsDraft {
 }
 
 /// The Delete Tracks dialog (Sequence ▸ Delete Tracks…): per kind, whether to delete and which
-/// track (`"empty"` = All Empty Tracks, or a track name such as `"V2"`).
+/// track (`"empty"` = All Empty Tracks, or a track name such as `"V2"` / `"C2"`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DeleteTracksDraft {
@@ -888,11 +888,13 @@ pub struct DeleteTracksDraft {
     pub video_target: String,
     pub audio: bool,
     pub audio_target: String,
+    pub captions: bool,
+    pub captions_target: String,
 }
 
 impl Default for DeleteTracksDraft {
     fn default() -> Self {
-        Self { video: false, video_target: "empty".into(), audio: false, audio_target: "empty".into() }
+        Self { video: false, video_target: "empty".into(), audio: false, audio_target: "empty".into(), captions: false, captions_target: "empty".into() }
     }
 }
 
