@@ -2893,6 +2893,7 @@
 	Target Bitrate	Velocidad de bits objetivo
 	Adaptive ({bpp} bits per pixel)	Adaptable ({bpp} bits por píxel)
 	Maximum Bitrate	Velocidad de bits máxima
+	Quality (CRF)	Calidad (CRF)
 	Key Frame Distance	Distancia entre fotogramas clave
 	Quality	Calidad
 	Render at Maximum Depth	Procesar a la máxima profundidad
@@ -3297,6 +3298,7 @@
 	Upper First	Superior primero
 	VBR, 1 pass	VBR, 1 pasada
 	VBR, 2 pass	VBR, 2 pasadas
+	CRF (constant quality)	CRF (calidad constante)
 	Vimeo 1080p Full HD	Vimeo 1080p Full HD
 	Vimeo 2160p 4K Ultra HD	Vimeo 2160p 4K Ultra HD
 	Voice-over Record	Grabación de voz en off
