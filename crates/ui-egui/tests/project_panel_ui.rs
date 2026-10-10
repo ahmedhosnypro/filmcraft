@@ -448,6 +448,44 @@ fn bins_open_in_place_in_a_tab_or_in_a_window() {
 }
 
 #[test]
+fn select_all_takes_only_the_shown_bin() {
+    // #456: Cmd+A selected every item in the project, closed bins and other tabs included
+    let mut d = project_driver();
+    d.exec("project.view.set", json!({"view": "list"}));
+    let (bin, items) = d.footage();
+    assert!(!items.is_empty());
+    let sorted = |v: &[ItemId]| {
+        let mut v: Vec<u64> = v.iter().map(|i| i.0).collect();
+        v.sort();
+        v
+    };
+    let mut footage = items.clone();
+    footage.sort();
+    // the root with the Footage bin closed: none of its items
+    d.app().ui.expanded_bins.clear();
+    d.frames(2);
+    d.key("Cmd+A");
+    let sel = d.app().session.state.project_selection.clone();
+    assert!(sel.iter().all(|i| !items.contains(&i.0)), "{sel:?}");
+    assert!(sel.iter().all(|i| d.app().session.project.root.children.contains(&BinEntry::Item(*i))), "{sel:?}");
+    // twirled open in List view, its items are shown and count
+    d.app().ui.expanded_bins.push(bin);
+    d.frames(2);
+    d.key("Cmd+A");
+    let sel = d.app().session.state.project_selection.clone();
+    assert!(items.iter().all(|i| sel.contains(&ItemId(*i))), "{sel:?}");
+    d.key("Cmd+Shift+A");
+    assert!(d.app().session.state.project_selection.is_empty());
+    // the bin opened in its own tab: exactly its items
+    d.app().ui.expanded_bins.clear();
+    d.app().session.prefs.general.bins_double_click = "openNewTab".into();
+    double_click_bin(&mut d, bin, false);
+    assert_eq!(d.app().ui.project_panel.active_tab, Some(0));
+    d.key("Cmd+A");
+    assert_eq!(sorted(&d.app().session.state.project_selection), footage);
+}
+
+#[test]
 fn footer_buttons_are_wired() {
     let mut d = project_driver();
     let bins0 = d.app().session.project.root.children.len();

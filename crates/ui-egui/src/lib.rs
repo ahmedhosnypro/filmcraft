@@ -1361,8 +1361,16 @@ impl FilmcraftApp {
         });
         for mut id in fire {
             // Select All / Deselect All act on the Project panel's items when it has focus (#168).
-            if self.ui.focused == PanelKind::Project && matches!(id.as_str(), "edit.selectAll" | "edit.deselectAll") {
-                id = id.replacen("edit.", "project.", 1);
+            // Select All takes only what the shown bin lists, not the whole project (#456).
+            if self.ui.focused == PanelKind::Project && id == "edit.selectAll" {
+                let (cmd, params) = panels::project::select_all_command(self);
+                if let Err(e) = menus::invoke(self, ctx, &cmd, params) {
+                    self.ui.status = e;
+                }
+                continue;
+            }
+            if self.ui.focused == PanelKind::Project && id == "edit.deselectAll" {
+                id = "project.deselectAll".into();
             }
             // Clear in the Project panel removes the selected bin when no item is selected (#587).
             let clear = if self.ui.focused == PanelKind::Project && id == "project.delete" {
