@@ -683,8 +683,14 @@ pub fn bindings(app: &FilmcraftApp) -> Vec<KeyBinding> {
     let shifted: Vec<KeyBinding> =
         v.iter().filter(|b| b.0.shift).filter_map(|(m, k, id, p)| shifted_key(*k).map(|k2| (*m, k2, id.clone(), p.clone()))).collect();
     v.extend(shifted);
-    v.sort_by_key(|(m, ..)| std::cmp::Reverse(m.command as u8 + m.shift as u8 + m.alt as u8 + m.ctrl as u8));
+    v.sort_by_key(|(m, ..)| std::cmp::Reverse(specificity(*m)));
     v
+}
+
+/// How many modifiers a chord names: chords naming more are matched first, because egui ignores
+/// extra Shift and Alt when matching a key press.
+pub fn specificity(m: egui::Modifiers) -> u8 {
+    m.command as u8 + m.shift as u8 + m.alt as u8 + m.ctrl as u8
 }
 
 /// The key a US layout reports for `k` with Shift held, when it differs.
