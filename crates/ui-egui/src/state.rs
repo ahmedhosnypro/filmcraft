@@ -277,6 +277,8 @@ pub struct MonitorView {
     pub pan: [f32; 2],
     pub safe_margins: bool,
     pub show_transport: bool,
+    /// Transport buttons hidden through the monitor's Button Editor. Stored per monitor.
+    pub transport_hidden: Vec<String>,
     /// Program monitor display mode Multi-Camera (angle grid + program).
     pub multicam: bool,
     pub display: DisplayMode,
@@ -300,6 +302,8 @@ impl Default for MonitorView {
             pan: [0.0, 0.0],
             safe_margins: false,
             show_transport: true,
+            // The optional Loop button is available from the editor without altering default layouts.
+            transport_hidden: vec!["playback.loop".into()],
             multicam: false,
             display: DisplayMode::Composite,
             compare_ref: None,
