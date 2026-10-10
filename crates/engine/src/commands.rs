@@ -706,6 +706,20 @@ pub(crate) fn place_item(
     })
 }
 
+/// How long an item runs on the Timeline without In/Out marks: its duration, or for a still (and a
+/// generator without a length) Settings ▸ Timeline ▸ Still Image Default Duration.
+pub(crate) fn full_duration(s: &Session, pi: &filmcraft_project::ProjectItem) -> Tick {
+    match &pi.kind {
+        ItemKind::Media(m)
+            if matches!(m.info.kind, filmcraft_media::MediaKind::Still)
+                || (matches!(m.info.kind, filmcraft_media::MediaKind::Synthetic) && m.info.duration.0 <= 0) =>
+        {
+            s.prefs.timeline.still_duration(s.sequence_rate())
+        }
+        _ => pi.duration(),
+    }
+}
+
 pub(crate) fn source_range(s: &Session) -> Option<(ItemId, TimeRange)> {
     let item = s.state.source_item?;
     let pi = s.project.item(item)?;
@@ -2133,16 +2147,7 @@ fn build() -> Vec<CommandSpec> {
                 if p.get("audio").is_some() && audio && pi.has_audio() && a.is_none() {
                     return Err(bad("timeline.place", "no audio destination: add or enable an audio track"));
                 }
-                let full = match &pi.kind {
-                    // Settings ▸ Timeline ▸ Still Image Default Duration
-                    ItemKind::Media(m)
-                        if matches!(m.info.kind, filmcraft_media::MediaKind::Still)
-                            || (matches!(m.info.kind, filmcraft_media::MediaKind::Synthetic) && m.info.duration.0 <= 0) =>
-                    {
-                        s.prefs.timeline.still_duration(s.sequence_rate())
-                    }
-                    _ => pi.duration(),
-                };
+                let full = full_duration(s, pi);
                 let (mi, mo) = match &pi.kind {
                     ItemKind::Media(m) => (m.mark_in, m.mark_out.map(|o| o + pi.frame_rate().frame_duration())),
                     ItemKind::Subclip { range, .. } => (Some(range.start), Some(range.end())),
@@ -2843,6 +2848,7 @@ fn build() -> Vec<CommandSpec> {
     v.extend(crate::keyboard::commands());
     v.extend(crate::project_panel::commands());
     v.extend(crate::media_browser::commands());
+    v.extend(crate::paste_media::commands());
     // Edit ▸ Label ▸ <colour>, Paste Attributes, subclips, Video / Audio Options, Replace With Clip…
     // and their menu order
     crate::clip_ops::apply_layout(&mut v);

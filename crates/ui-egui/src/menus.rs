@@ -490,6 +490,16 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
             app.dialog = Some(crate::Dialog::RevertConfirm);
             return Ok(json!({"dialog": "revert"}));
         }
+        // Files or an image on the system clipboard paste into the Timeline, or import into the
+        // Project panel (#611). Copying clips puts their names there as text, so media on the
+        // clipboard was copied after them; without media, Paste pastes the copied clips.
+        "edit.paste" | "edit.pasteInsert"
+            if params.as_object().is_none_or(|m| m.is_empty()) && matches!(app.ui.focused, PanelKind::Timeline | PanelKind::Project) =>
+        {
+            if let Some(r) = paste_clipboard_media(app, id == "edit.pasteInsert") {
+                return r;
+            }
+        }
         "file.recover" if params.as_object().is_none_or(|m| m.is_empty()) => {
             if app.session.recovery_candidates().is_empty() {
                 return Err("there are no unsaved changes to recover".into());
@@ -543,6 +553,32 @@ fn put_clip_names_on_system_clipboard(app: &FilmcraftApp, ctx: &egui::Context) {
     }
     let text = names.join("\n");
     ctx.copy_text(if text.trim().is_empty() { format!("{} clips", names.len()) } else { text });
+}
+
+/// Paste the files or the image on the system clipboard: placed on the Timeline when it has focus,
+/// imported into the shown bin in the Project panel. None when the clipboard holds neither.
+fn paste_clipboard_media(app: &mut FilmcraftApp, insert: bool) -> Option<Result<Value, String>> {
+    let media = (app.hooks.clipboard_media.as_mut()?)()?;
+    let paths = match media {
+        crate::ClipboardMedia::Files(paths) => paths,
+        crate::ClipboardMedia::Image { width, height, rgba } => match encode_png(width, height, rgba)
+            .and_then(|png| filmcraft_engine::paste_media::save_pasted_image(&mut app.session, &png).map_err(|e| e.to_string()))
+        {
+            Ok(path) => vec![path],
+            Err(e) => return Some(Err(e)),
+        },
+    };
+    let params = json!({"paths": paths, "insert": insert, "place": app.ui.focused == PanelKind::Timeline, "bin": app.import_bin().0});
+    Some(app.session.execute("edit.pasteMedia", params).map_err(|e| e.to_string()))
+}
+
+/// A compressed PNG of a clipboard image; an error when its size and pixels disagree.
+fn encode_png(width: usize, height: usize, rgba: Vec<u8>) -> Result<Vec<u8>, String> {
+    let (w, h) = (u32::try_from(width).map_err(|e| e.to_string())?, u32::try_from(height).map_err(|e| e.to_string())?);
+    let img = image::RgbaImage::from_raw(w, h, rgba).ok_or("the image on the clipboard is malformed")?;
+    let mut png = Vec::new();
+    img.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).map_err(|e| e.to_string())?;
+    Ok(png)
 }
 
 /// A menu tree entry for display / `ui.menu.list`.
