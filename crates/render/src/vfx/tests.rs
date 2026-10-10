@@ -504,6 +504,12 @@ fn keyers_known_values() {
     set(&mut e, "output", ParamValue::Choice(1));
     let m = run("ultra_key", &e, &img, &cx());
     assert!(m.get(1, 0)[0] < 0.05 && m.get(6, 0)[0] > 0.9 && m.get(1, 0)[3] == 1.0);
+    let mut aggressive = inst("ultra_key");
+    set(&mut aggressive, "setting", ParamValue::Choice(2));
+    let ag = run("ultra_key", &aggressive, &img, &cx());
+    let def = run("ultra_key", &inst("ultra_key"), &img, &cx());
+    let delta = (0..img.w * img.h).map(|i| (ag.px[i * 4 + 3] - def.px[i * 4 + 3]).abs()).fold(0.0f32, f32::max);
+    assert!(delta > 1e-4, "Aggressive Setting left the Default matte unchanged");
     // Alpha Adjust: invert and opacity
     let mut a = Image::filled(2, 2, [0.1, 0.1, 0.1, 0.25]);
     let mut e = inst("alpha_adjust");

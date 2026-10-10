@@ -2571,15 +2571,33 @@ fn build() -> Vec<CommandSpec> {
                     {
                         e.params.insert(pid.clone(), filmcraft_project::Param::new(d.default.clone()));
                     }
-                    let prm = crate::masks::target_param(e, &pq, &pid).ok_or_else(|| bad("effects.setParam", format!("no param `{pid}`")))?;
-                    let v = json_to_param(&prm.value, &val).ok_or_else(|| bad("effects.setParam", "value has the wrong type"))?;
-                    if keyframe {
-                        // the stopwatch and the value in one step
-                        prm.put_keyframe(mt, v);
-                    } else {
-                        prm.set_at(mt, v);
+                    let (keyframes, v) = {
+                        let prm = crate::masks::target_param(e, &pq, &pid).ok_or_else(|| bad("effects.setParam", format!("no param `{pid}`")))?;
+                        let v = json_to_param(&prm.value, &val).ok_or_else(|| bad("effects.setParam", "value has the wrong type"))?;
+                        let keyframes = if keyframe {
+                            // the stopwatch and the value in one step
+                            prm.put_keyframe(mt, v.clone());
+                            prm.keyframes.len()
+                        } else {
+                            prm.set_at(mt, v.clone());
+                            prm.keyframes.len()
+                        };
+                        (keyframes, v)
+                    };
+                    if e.effect == "ultra_key" && pid == "setting"
+                        && let ParamValue::Choice(setting) = v
+                        && let Some(rows) = filmcraft_project::effect::ultra_key_setting(setting)
+                    {
+                        for (id, value) in rows {
+                            if let Some(p) = e.param_mut(id) {
+                                p.value = ParamValue::Float(*value);
+                                p.keyframes.clear();
+                            } else {
+                                e.params.insert((*id).to_string(), filmcraft_project::Param::new(ParamValue::Float(*value)));
+                            }
+                        }
                     }
-                    Ok(prm.keyframes.len())
+                    Ok(keyframes)
                 })?;
                 // 0 keyframes: the value is static (`time` was not used)
                 Ok(json!({"keyframes": keyframes}))
