@@ -913,7 +913,7 @@ fn build() -> Vec<CommandSpec> {
                 Ok(json!({"items": ids.iter().map(|i| i.0).collect::<Vec<_>>()}))
             }
         ),
-        cmd!("file.import", "Import…", ["File"], Some("Cmd+I"), r#"{"paths":[str],"bin":binId?,"imageSequence":bool?}"#, always, |s, p| {
+        cmd!("file.import", "Import…", ["File"], Some("Cmd+I"), r#"{"paths":[str],"bin":binId?,"imageSequence":bool?,"replace":bool?}"#, always, |s, p| {
             let bin = u64_p(p, "bin").map(filmcraft_project::BinId);
             let paths: Vec<String> = match p.get("paths").and_then(Value::as_array) {
                 Some(a) => a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect(),
@@ -921,6 +921,10 @@ fn build() -> Vec<CommandSpec> {
             };
             if paths.is_empty() {
                 return Err(bad("file.import", "need `paths`"));
+            }
+            if bool_p(p, "replace").unwrap_or(false) {
+                let name = s.project.name.clone();
+                s.execute("file.newProject", json!({ "name": name }))?;
             }
             let mut ids = Vec::new();
             let mut errors = Vec::new();
