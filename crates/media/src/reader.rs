@@ -2,8 +2,9 @@
 //!
 //! A [`ByteReader`] serves reads at any offset (a native file, a web `Blob` read in chunks, an
 //! in-memory buffer). Container openers that only need the index and then single samples (MP4/MOV,
-//! Matroska) open from a reader ([`ReaderOpener`]); formats decoded in one go (stills, WAV,
-//! standalone compressed audio) fall back to reading the whole file through it.
+//! Matroska) open from a reader ([`ReaderOpener`]), as does WAV (header now, sample ranges on
+//! demand); formats decoded in one go (stills, standalone compressed audio) fall back to reading
+//! the whole file through it.
 
 use std::io;
 use std::sync::Arc;
@@ -109,15 +110,15 @@ pub type ReaderOpener = fn(name: &str, head: &[u8], reader: &SharedReader) -> Op
 /// Bytes sniffed by [`open_reader`].
 pub const HEAD_LEN: usize = 64 * 1024;
 
-/// Open media from a reader: reader openers first; otherwise read the whole file and use the
-/// byte openers (`extra`, then stills / WAV).
+/// Open media from a reader: reader openers first, then WAV (read in place); otherwise read the
+/// whole file and use the byte openers (`extra`, then stills).
 pub fn open_reader(name: &str, reader: SharedReader, reader_openers: &[ReaderOpener], extra: &[Opener]) -> Result<SharedSource> {
     open_reader_within(name, reader, reader_openers, extra, u64::MAX)
 }
 
 /// Like [`open_reader`], but a file no reader opener takes is read whole only up to `max_whole`
 /// bytes; a larger one is refused instead. For looking at files rather than importing them (the
-/// Media Browser's properties and thumbnails, #157): reading a multi-gigabyte AVI or WAV into
+/// Media Browser's properties and thumbnails, #157): reading a multi-gigabyte AVI into
 /// memory to show its duration, or to find out it isn't supported, thrashes the disk.
 pub fn open_reader_within(name: &str, reader: SharedReader, reader_openers: &[ReaderOpener], extra: &[Opener], max_whole: u64) -> Result<SharedSource> {
     let head = read_range(&*reader, 0, HEAD_LEN).map_err(|e| MediaError::Io(format!("{name}: {e}")))?;
@@ -125,6 +126,9 @@ pub fn open_reader_within(name: &str, reader: SharedReader, reader_openers: &[Re
         if let Some(r) = o(name, &head, &reader) {
             return r;
         }
+    }
+    if crate::wav::sniff(&head) {
+        return Ok(Arc::new(crate::wav::WavSource::open(name, reader)?));
     }
     if reader.len() > max_whole {
         return Err(MediaError::Unsupported(format!("{name}: no streaming reader for this format, and it is too large to read whole here")));
@@ -181,35 +185,58 @@ mod tests {
         }
     }
 
-    /// #157: looking at a file no streaming reader takes (an AVI, a large WAV) read all of it.
-    /// Within a limit it reads the head only and refuses; a small file still opens.
+    /// #157: looking at a file no streaming reader takes (an AVI) read all of it. Within a limit
+    /// it reads the head only and refuses.
     #[test]
     fn open_within_reads_only_the_head_of_large_unstreamable_files() {
-        let mut wav = crate::wav::write_wav16(&vec![0.25; 48_000 * 2], 2, 48_000);
-        let small = wav.len() as u64;
-        let r = Arc::new(Counting(MemReader(Arc::from(wav.clone())), Default::default()));
-        let src = open_reader_within("a.wav", r.clone(), &[], &[], small).unwrap();
-        assert_eq!(src.info().audio().unwrap().channels, 2);
-        // the same file over the limit: refused after reading the sniffing head only
-        let r = Arc::new(Counting(MemReader(Arc::from(wav.clone())), Default::default()));
-        let e = open_reader_within("a.wav", r.clone(), &[], &[], small - 1).err().unwrap();
+        let mut avi = vec![0u8; 4 * HEAD_LEN];
+        avi[..4].copy_from_slice(b"RIFF");
+        avi[8..12].copy_from_slice(b"AVI ");
+        let r = Arc::new(Counting(MemReader(Arc::from(avi)), Default::default()));
+        let e = open_reader_within("a.avi", r.clone(), &[], &[], HEAD_LEN as u64).err().unwrap();
         assert!(matches!(e, MediaError::Unsupported(_)), "{e:?}");
         assert!(r.1.load(std::sync::atomic::Ordering::SeqCst) <= HEAD_LEN as u64);
-        // an unsupported format is refused without being read whole either
-        wav.resize(4 * HEAD_LEN, 0);
-        wav[..4].copy_from_slice(b"RIFF");
-        wav[8..12].copy_from_slice(b"AVI ");
+    }
+
+    /// #279: a WAV is read in place, never whole: opening it reads the sniffing head and its chunk
+    /// headers, and audio reads only the requested samples, however large the file (and over the
+    /// Media Browser's whole-file limit too).
+    #[test]
+    fn wav_opens_in_place_and_reads_only_requested_samples() {
+        let rate = 48_000usize;
+        let samples: Vec<f32> = (0..rate * 2 * 20).map(|i| ((i / 2) % 100) as f32 / 200.0).collect();
+        let wav = crate::wav::write_wav16(&samples, 2, rate as u32);
+        let size = wav.len() as u64;
+        assert!(size > 3 * HEAD_LEN as u64);
         let r = Arc::new(Counting(MemReader(Arc::from(wav)), Default::default()));
-        assert!(open_reader_within("a.avi", r.clone(), &[], &[], HEAD_LEN as u64).is_err());
-        assert!(r.1.load(std::sync::atomic::Ordering::SeqCst) <= HEAD_LEN as u64);
+        let read = || r.1.load(std::sync::atomic::Ordering::SeqCst);
+        let src = open_reader_within("a.wav", r.clone(), &[], &[], HEAD_LEN as u64).unwrap();
+        assert_eq!(src.info().audio().unwrap().channels, 2);
+        assert_eq!(src.info().duration, filmcraft_time::Tick::from_units(20, 1));
+        assert_eq!(src.info().file_size, Some(size));
+        let after_open = read();
+        assert!(after_open <= HEAD_LEN as u64 + 64, "{after_open}");
+        // 10 ms from the middle: about that much is read, and the samples are right
+        let a = src.audio(rate as i64 * 10 + 7, 480, rate as u32).unwrap();
+        assert!(read() - after_open <= 481 * 4, "{}", read() - after_open);
+        let frame = rate * 10 + 7 + 3;
+        assert!((a.channels[0][3] - samples[frame * 2]).abs() < 1e-4);
+        assert!((a.channels[1][3] - samples[frame * 2 + 1]).abs() < 1e-4);
+        // past the end: silence, nothing read
+        let before = read();
+        let a = src.audio(rate as i64 * 30, 16, rate as u32).unwrap();
+        assert!(a.channels[0].iter().all(|&s| s == 0.0));
+        assert_eq!(read(), before);
     }
 
     #[test]
     fn falls_back_to_byte_openers() {
-        // a WAV is opened through the whole-file path
-        let wav = crate::wav::write_wav16(&[0.0, 0.5, -0.5, 0.25], 2, 48_000);
-        let r: SharedReader = Arc::new(MemReader(wav.into()));
-        let s = open_reader("a.wav", r, &[], &[]).unwrap();
-        assert!(s.info().has_audio());
+        // a format without a reader opener is read whole and handed to the byte openers
+        fn whole(_: &str, bytes: Arc<[u8]>) -> Option<Result<SharedSource>> {
+            Some(Err(MediaError::Unsupported(format!("got {} bytes", bytes.len()))))
+        }
+        let r: SharedReader = Arc::new(MemReader(Arc::from(&b"bytes"[..])));
+        let e = open_reader("a.xyz", r, &[], &[whole]).err().unwrap();
+        assert!(matches!(&e, MediaError::Unsupported(m) if m == "got 5 bytes"), "{e:?}");
     }
 }
