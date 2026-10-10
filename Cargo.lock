@@ -1879,6 +1879,7 @@ dependencies = [
  "filmcraft-testkit",
  "filmcraft-text",
  "filmcraft-time",
+ "filmcraft-tts",
  "image",
  "log",
  "serde",
@@ -2224,6 +2225,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "filmcraft-tts"
+version = "0.5.0"
+dependencies = [
+ "candle-core",
+ "candle-nn",
+ "filmcraft-audio-dsp",
+ "filmcraft-tts-text",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "zip",
+]
+
+[[package]]
+name = "filmcraft-tts-text"
+version = "0.5.0"
+dependencies = [
+ "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "filmcraft-ui-egui"
 version = "0.5.0"
 dependencies = [
@@ -2247,6 +2270,7 @@ dependencies = [
  "filmcraft-scopes",
  "filmcraft-text",
  "filmcraft-time",
+ "filmcraft-tts",
  "image",
  "log",
  "pollster 0.4.0",
